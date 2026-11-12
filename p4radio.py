@@ -636,7 +636,7 @@ def rb_search(params):
         try:
             req = urllib.request.Request(f"https://{host}/json/stations/search?{q}",
                                          headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:
                 return json.load(r)
         except Exception as e:
             last = e
@@ -644,9 +644,18 @@ def rb_search(params):
 
 
 def cmd_search(a):
-    res = rb_search(dict(name=a.name, tag=a.tag, countrycode=a.country, codec=a.codec,
-                         language=a.language, bitrateMin=a.min_kbps, limit=a.limit,
-                         hidebroken="true", order="clickcount", reverse="true"))
+    q = dict(name=a.name, tag=a.tag, countrycode=a.country, codec=a.codec,
+             language=a.language, bitrateMin=a.min_kbps,
+             hidebroken="true", order="clickcount", reverse="true")
+    if a.limit:
+        res = rb_search(dict(q, limit=a.limit))
+    else:                                   # 0 = everything; server caps unpaged replies at 1000
+        res, page = [], 1000
+        while True:
+            chunk = rb_search(dict(q, limit=page, offset=len(res)))
+            res += chunk
+            if len(chunk) < page:
+                break
     if not res:
         print("nothing found")
         return
@@ -903,7 +912,8 @@ def main():
     s = sp.add_parser("search", help="search radio-browser.info")
     s.add_argument("--name"); s.add_argument("--tag"); s.add_argument("--country", help="ISO code, e.g. GB")
     s.add_argument("--codec", help="MP3 / AAC / AAC+"); s.add_argument("--language")
-    s.add_argument("--min-kbps", type=int); s.add_argument("--limit", type=int, default=25)
+    s.add_argument("--min-kbps", type=int)
+    s.add_argument("--limit", type=int, default=25, help="max results (default 25, 0 = all matches)")
     s.add_argument("--add", help="indices to add without prompting (e.g. 1,3 or all)")
     s.set_defaults(fn=cmd_search)
 

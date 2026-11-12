@@ -16,6 +16,7 @@ sudo apt install mpv          # only needed for listen
 ```bash
 ./p4radio.py import /media/sd/stations.txt     # existing list; line layout is auto-detected
 ./p4radio.py search --tag jazz --country GB    # radio-browser.info, pick by number
+./p4radio.py search --country GB --limit 0 --add all   # every match (paged), add them all
 ./p4radio.py add https://example.com/stream --name "My Station"
 ./p4radio.py test                              # probe all -> station_log.md (+ logs/ history)
 ./p4radio.py listen --undecided                # play in mpv: k=keep d=drop n=next r=replay e=rename q=quit
