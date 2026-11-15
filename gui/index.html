@@ -174,6 +174,25 @@ select.t { appearance: auto; }
 .bright input[type=range] { flex: 1; max-width: 320px; }
 h3.card-h { margin: 0 0 6px; font-size: 16px; }
 
+/* music */
+.mrow { display: grid; grid-template-columns: 1fr auto auto auto; gap: 14px; align-items: center;
+        padding: 9px 0; border-bottom: 1px solid var(--line); }
+.mrow:last-child { border-bottom: 0; }
+.mrow .n { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13.5px; white-space: nowrap; }
+.src { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
+.src code { font-size: 13px; background: var(--bg); padding: 3px 8px; border-radius: 6px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.bar { height: 10px; background: var(--bg); border-radius: 999px; overflow: hidden; margin: 10px 0 6px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+.fsdlg { width: min(640px, calc(100vw - 32px)); }
+.fs-path { font-size: 13px; background: var(--bg); padding: 6px 10px; border-radius: 6px; word-break: break-all; }
+.fs-list { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; }
+.fs-item { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); font: inherit; padding: 8px 12px; cursor: pointer; }
+.fs-item:hover { background: var(--soft); }
+.fs-item:last-child { border-bottom: 0; }
+.places { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
 /* player bar */
 #player { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
           background: var(--ink); color: var(--bg); border-radius: 999px; padding: 8px 10px 8px 18px;
@@ -210,7 +229,8 @@ h3.card-h { margin: 0 0 6px; font-size: 16px; }
     <button data-go="find"><span class="n">2</span>Find stations</button>
     <button data-go="stations"><span class="n">3</span>My stations</button>
     <button data-go="settings"><span class="n">4</span>Settings</button>
-    <button data-go="write"><span class="n">5</span>Write</button>
+    <button data-go="music"><span class="n">5</span>Music</button>
+    <button data-go="write"><span class="n">6</span>Write</button>
   </nav>
   <span class="saved" id="saved"></span>
 </header>
@@ -307,6 +327,13 @@ h3.card-h { margin: 0 0 6px; font-size: 16px; }
     </div>
   </section>
 
+  <section id="music">
+    <h2>Music</h2>
+    <p class="lead">MP3 songs on the stick play from the radio's USB tab, browsed by folder. They are read from
+      the stick, so leave it in the radio. This is optional and separate from writing the stations.</p>
+    <div id="musicbox"></div>
+  </section>
+
   <section id="write">
     <h2>Write to the stick</h2>
     <p class="lead">Check what will change, then write. Only files that are different are written.</p>
@@ -351,6 +378,15 @@ h3.card-h { margin: 0 0 6px; font-size: 16px; }
 </dialog>
 
 <input type="file" id="rowfile" accept="image/*" hidden>
+<dialog id="fsdlg" class="fsdlg"><form method="dialog" style="padding:20px 22px">
+  <h3 style="margin:0 0 12px">Choose a folder of music</h3>
+  <div class="places" id="fsplaces"></div>
+  <div class="fs-path" id="fspath"></div>
+  <div class="fs-list" id="fslist"></div>
+  <div class="dlg-foot"><span class="muted small grow" id="fsinfo"></span>
+    <button type="button" class="btn" id="fscancel">Cancel</button>
+    <button type="button" class="btn primary" id="fschoose">Choose this folder</button></div>
+</form></dialog>
 <div id="player" role="status"><span class="what" id="pwhat"></span><button id="pstop">Stop</button></div>
 
 <script>
@@ -454,6 +490,7 @@ function go(page) {
   if (page === "write") { renderWrite(); refreshPlan(); }
   if (page === "find") loadCountries();
   if (page === "settings") renderSettings();
+  if (page === "music") { renderMusic(); loadMusic(); }
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.go));
 
@@ -470,6 +507,7 @@ async function pollSticks() {
       if (!S.stick && usable.length === 1) S.stick = usable[0];
       renderSticks();
       if (!S.rows.length) renderList();
+      if (S.page === "music" && !(S.mjob && S.mjob.state === "running")) loadMusic();
       if (S.page === "write") { renderWrite(); refreshPlan(); }
     }
   } catch (e) { /* program gone: the next poll says so */ }
@@ -981,7 +1019,131 @@ async function loadNets() {
   }
 }
 
-/* ---------- 5. write ---------- */
+/* ---------- 5. music ---------- */
+const MB = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : Math.round(n / 1e6) + " MB";
+async function loadMusic() {
+  if (!S.stick) { S.music = null; renderMusic(); return; }
+  try { S.music = await api("music?mount=" + encodeURIComponent(S.stick.mount)); } catch (e) { S.music = { error: e.message }; }
+  renderMusic();
+}
+function renderMusic() {
+  const box = $("musicbox");
+  if (!S.stick) { box.innerHTML = `<div class="card">No stick chosen. <button class="link" onclick="go('stick')">Choose the USB stick</button> first.</div>`; return; }
+  const m = S.music;
+  if (!m) { box.innerHTML = `<div class="card empty"><span class="spinner"></span></div>`; return; }
+  if (m.error) { box.innerHTML = `<div class="msg bad">${esc(m.error)}</div>`; return; }
+  const j = S.mjob || { state: "idle" }, busy = j.state === "running";
+  const folders = m.folders.length ? m.folders.map((f, i) => `<div class="mrow"><div>${f.name ? "📁 " + esc(f.name) : "<i>Songs not in a folder</i>"}</div>
+      <span class="n">${f.songs} song${f.songs === 1 ? "" : "s"}</span><span class="n">${MB(f.bytes)}</span>
+      <button class="btn danger" data-mrm="${i}" ${busy ? "disabled" : ""}>Remove</button></div>`).join("")
+    : `<p class="muted">No music on the stick yet.</p>`;
+  const srcs = m.sources.length ? m.sources.map((s, i) => `<div class="src"><code title="${esc(s.path)}">${esc(s.path)}</code>
+      <span class="muted small">→ on the stick:</span>
+      <input class="t" style="width:200px;flex:none" data-sdest="${i}" value="${esc(s.dest)}" list="mfolders" placeholder="music/ itself" ${busy ? "disabled" : ""}>
+      <button class="icon-btn" data-srm="${i}" title="Don't copy this folder" ${busy ? "disabled" : ""}>✕</button></div>`).join("")
+    + `<datalist id="mfolders">${m.folders.filter((f) => f.name).map((f) => `<option value="${esc(f.name)}">`).join("")}</datalist>`
+    : `<p class="muted small" style="margin:6px 0">No folders chosen yet.</p>`;
+  box.innerHTML = `<div class="card"><h3 class="card-h">On the stick</h3>${folders}
+      <p class="small muted" style="margin:10px 0 0">${m.songs} song${m.songs === 1 ? "" : "s"}, ${MB(m.bytes)}; ${MB(m.free)} free.</p></div>
+    <div class="card"><h3 class="card-h">Copy music from this computer</h3>
+      <p class="small muted" style="margin:0 0 6px">Each folder goes into a folder on the stick (you can change its name), with its
+        sub-folders. Only MP3 songs are copied, with cover.jpg / folder.jpg pictures. Songs already anywhere on the stick
+        are skipped, so copying again only adds what is new.</p>
+      ${srcs}
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="madd" ${busy ? "disabled" : ""}>Add a folder…</button>
+        <span class="grow"></span>
+        <button class="btn" id="mcheck" ${busy || !m.sources.length ? "disabled" : ""}>Check</button>
+        <button class="btn primary" id="mcopy" ${busy || !m.sources.length ? "disabled" : ""}>Copy to the stick</button>
+      </div>${planBlock()}${musicJobBlock(j)}</div>`;
+  box.querySelectorAll("[data-mrm]").forEach((b) => b.onclick = async () => {
+    const f = m.folders[+b.dataset.mrm];
+    if (!confirm(`Delete ${f.name ? `the folder “${f.name}”` : "the songs not in a folder"} (${f.songs} songs) from the stick?`)) return;
+    try { S.music = Object.assign(await api("music/remove", { mount: S.stick.mount, name: f.name }), { sources: m.sources }); S.plan5 = null; renderMusic(); }
+    catch (e) { alert(e.message); }
+  });
+  box.querySelectorAll("[data-srm]").forEach((b) => b.onclick = () => setSources(m.sources.filter((_, i) => i !== +b.dataset.srm)));
+  box.querySelectorAll("[data-sdest]").forEach((inp) => inp.onchange = () =>
+    setSources(m.sources.map((s, i) => i === +inp.dataset.sdest ? { path: s.path, dest: inp.value } : s)));
+  $("madd").onclick = () => openFs("");
+  $("mcheck").onclick = checkMusic;
+  $("mcopy").onclick = copyMusic;
+  const c = $("mcancel"); if (c) c.onclick = async () => { c.disabled = true; try { await api("music/cancel", {}); } catch (e) { /* ignore */ } };
+}
+async function setSources(list) {
+  try { S.music.sources = (await api("music/sources", { sources: list })).sources; S.plan5 = null; renderMusic(); }
+  catch (e) { alert(e.message); }
+}
+function planBlock() {
+  const p = S.plan5;
+  if (!p) return "";
+  if (p.busy) return `<div class="msg"><span class="spinner sm"></span> Looking through the folders…</div>`;
+  if (p.error) return `<div class="msg bad">${esc(p.error)}</div>`;
+  const c = p.count, n = (c.copy || 0) + (c.replace || 0) + (c.cover || 0);
+  const away = Object.entries(p.elsewhere || {});
+  const out = Object.entries(p.left_out).map(([e, k]) => `${k} ${e.slice(1).toUpperCase()}`).join(", ");
+  const lines = [];
+  away.forEach(([w, k]) => lines.push(`${k} song${k > 1 ? "s are" : " is"} already on the stick in ${w ? `“${esc(w)}”` : "music/"} and won't be copied again.`));
+  if (out) lines.push(`Left out: ${out} file${Object.values(p.left_out).reduce((a, b) => a + b, 0) > 1 ? "s" : ""} — the radio plays MP3 only.`);
+  if (c.cover) lines.push(`${c.cover} folder picture${c.cover > 1 ? "s are" : " is"} converted so the radio can show ${c.cover > 1 ? "them" : "it"}.`);
+  if (p.renamed_total) lines.push(`${p.renamed_total} name${p.renamed_total > 1 ? "s" : ""} changed slightly for the stick (characters it can't store, or too long): `
+    + p.renamed.slice(0, 3).map(([a, b]) => `${esc(a)} → ${esc(b.split("/").pop())}`).join("; ") + (p.renamed_total > 3 ? "; …" : "") + ".");
+  if (p.skipped_total) lines.push(`${p.skipped_total} skipped: ` + p.skipped.slice(0, 3).map(([a, b]) => `${esc(a)} (${esc(b)})`).join("; ") + ".");
+  p.warnings.forEach((w) => lines.push(esc(w[0].toUpperCase() + w.slice(1)) + "."));
+  return `<div class="msg ${p.fits ? (n ? "ok" : "ok") : "bad"}">${n
+      ? `Copy ${n} file${n > 1 ? "s" : ""} (${MB(p.bytes)}); ${MB(p.free)} free.${c.same ? ` ${c.same} already on the stick.` : ""}`
+      : `Everything is already on the stick${(c.same || 0) + (c.elsewhere || 0) ? ` (${(c.same || 0) + (c.elsewhere || 0)} files)` : ""}.`}
+    ${p.fits ? "" : `<br><b>Not enough room on the stick.</b> Remove some music or choose fewer folders.`}</div>`
+    + (lines.length ? `<ul class="small muted">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>` : "");
+}
+function musicJobBlock(j) {
+  if (j.state === "idle") return "";
+  if (j.state === "error") return `<div class="msg bad">${esc(j.error)}</div>`;
+  if (j.state === "running") {
+    const pr = j.progress || { done: 0, total: 0, now: "" }, pc = pr.total ? Math.floor(100 * pr.done / pr.total) : 0;
+    return `<div class="bar"><div style="width:${pc}%"></div></div>
+      <div class="row small"><span class="grow muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${pr.total ? `${pc}% · ${MB(pr.done)} of ${MB(pr.total)}` : "Looking through the folders…"}${pr.now ? " · " + esc(pr.now.split("/").pop()) : ""}</span>
+      <button class="btn" id="mcancel">Cancel</button></div>`;
+  }
+  const r = j.result;
+  return `<div class="msg ${r.cancelled ? "warn" : "ok"}">${r.cancelled ? "Stopped." : "Done."} ${r.copied} file${r.copied === 1 ? "" : "s"} copied${r.covers ? `, ${r.covers} picture${r.covers > 1 ? "s" : ""} converted` : ""}.
+    ${r.art_problems ? `<br>${r.art_problems} song${r.art_problems > 1 ? "s carry" : " carries"} a picture the radio can't show (it shows the station-style tile instead); a cover.jpg in the folder fixes that.` : ""}
+    ${r.cancelled ? "" : `<br>Eject the stick on the Write page (or your file manager) before unplugging it.`}</div>`;
+}
+async function checkMusic() {
+  S.plan5 = { busy: true }; renderMusic();
+  try { S.plan5 = await api("music/plan", { mount: S.stick.mount }); } catch (e) { S.plan5 = { error: e.message }; }
+  renderMusic();
+}
+async function copyMusic() {
+  S.plan5 = null;
+  try { S.mjob = await api("music/copy", { mount: S.stick.mount }); renderMusic(); pollMusic(); }
+  catch (e) { alert(e.message); }
+}
+async function pollMusic() {
+  try { S.mjob = await api("music/job"); } catch (e) { return; }
+  if (S.mjob.state === "running") { if (S.page === "music") renderMusic(); setTimeout(pollMusic, 500); }
+  else { await loadMusic(); S.sticksKey = ""; pollSticks(); }
+}
+
+/* folder picker (folders on this computer, listed by the program) */
+let FS = null;
+async function openFs(path) {
+  try { FS = await api("fs?path=" + encodeURIComponent(path)); } catch (e) { alert(e.message); return; }
+  $("fsplaces").innerHTML = FS.places.map((p) => `<button type="button" class="net" data-fs="${esc(p.path)}">${esc(p.name)}</button>`).join("");
+  $("fspath").textContent = FS.path;
+  $("fslist").innerHTML = (FS.parent ? `<button type="button" class="fs-item" data-fs="${esc(FS.parent)}">⬑ Up one folder</button>` : "")
+    + (FS.dirs.length ? FS.dirs.map((d) => `<button type="button" class="fs-item" data-fs="${esc(d.path)}">📁 ${esc(d.name)}</button>`).join("")
+                      : `<div class="muted small" style="padding:10px 12px">No folders in here.</div>`);
+  $("fsinfo").textContent = FS.mp3 ? `${FS.mp3} MP3 song${FS.mp3 > 1 ? "s" : ""} in this folder` : "No MP3 songs directly in this folder (there may be some in its sub-folders).";
+  document.querySelectorAll("#fsdlg [data-fs]").forEach((b) => b.onclick = () => openFs(b.dataset.fs));
+  if (!$("fsdlg").open) $("fsdlg").showModal();
+  $("fslist").scrollTop = 0;
+}
+$("fscancel").onclick = () => $("fsdlg").close();
+$("fschoose").onclick = () => { $("fsdlg").close(); if (FS) setSources(S.music.sources.concat([{ path: FS.path }])); };
+
+/* ---------- 6. write ---------- */
 const EQ_NAMES = { flat: "Flat", bass: "Bass boost", treble: "Treble", acoustic: "Acoustic", live: "Live", voice: "Voice", classical: "Classical", loudness: "Loudness" };
 function renderWrite() {
   const box = $("writebox");
@@ -1076,10 +1238,11 @@ async function eject() {
   try { take(await api("state")); } catch (e) { document.body.innerHTML = `<main><div class="msg bad">${esc(e.message)}</div></main>`; return; }
   renderList();
   try { S.job = await api("job"); if (S.job.state === "running") pollJob(); } catch (e) { /* ignore */ }
+  try { S.mjob = await api("music/job"); if (S.mjob.state === "running") pollMusic(); } catch (e) { /* ignore */ }
   await pollSticks();
   renderSticks();
   const want = location.hash.slice(1);
-  go(["stick", "find", "stations", "settings", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
+  go(["stick", "find", "stations", "settings", "music", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
   setInterval(pollSticks, 3000);
 })();
 </script>

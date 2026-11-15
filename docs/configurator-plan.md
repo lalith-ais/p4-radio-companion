@@ -130,5 +130,11 @@ and show what the radio stored and anything it rejected, in plain words.
       one doesn't; report.txt names the network replaced. Report read-back
       was done in step 2 (first page). Tested on the radio 2026-11-15: clock,
       EQ and WiFi change all applied (firmware branch wifi-txt-replaces-setup)
-- [ ] 5 music
+- [x] 5 Music page and `music` command: MP3s (+ folder pictures, converted when
+      the radio can't show them) into a named folder in music/, FAT32-safe names,
+      the radio's path/depth/count limits, songs already anywhere on the stick
+      skipped, room checked, progress and cancel, remove a folder. Checked on
+      the real stick (FAT32 renames, 2 s file times, picture conversion) with a
+      test folder, removed afterwards. Tested on the radio 2026-11-15: copied
+      music plays
 - [ ] 6 packaging

@@ -15,6 +15,7 @@ Workflow:
     p4radio.py build   --out card/              # stations.txt + N.jpg logos in a folder
     p4radio.py stick   /media/me/STICK          # write radio/ on the radio's USB stick
     p4radio.py report  /media/me/STICK          # what the radio said after importing it
+    p4radio.py music   /media/me/STICK ~/Music/Album   # copy MP3 folders to music/
     p4radio.py gui                              # the same in a browser page (p4gui.py)
 
 Standard library only.  Pillow is needed only for logos (`build --logos`, `stick`)
@@ -1407,6 +1408,437 @@ def store_logo(data, logo_dir):
     return os.path.abspath(path)
 
 
+# --------------------------------------------------------------------------
+# music on the stick (the radio reads music/ in place; p4-radio main/library.c)
+# --------------------------------------------------------------------------
+
+FW_MUSIC_PATH_MAX = 191        # bytes of a path relative to music/ (LIBRARY_PATH_MAX 192)
+FW_MUSIC_DEPTH = 8             # folders below music/
+FW_MUSIC_TRACKS = 4000
+FW_MUSIC_FOLDERS = 1000
+FW_COVER_MAX = 2 * 1024 * 1024
+FW_COVER_DIM = 1600
+MUSIC_COVERS = ("cover", "folder", "front")          # .jpg next to the songs; first found wins
+OTHER_AUDIO = (".flac", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wav", ".wma", ".aif",
+               ".aiff", ".ape", ".alac", ".mp4", ".mpc", ".wv", ".dsf")
+_FAT_BAD = re.compile(r'[\x00-\x1f"*/:<>?\\|\x7f]')
+_FAT_RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} \
+    | {f"LPT{i}" for i in range(1, 10)}
+
+
+def fat_name(name):
+    """A file or folder name FAT32 accepts: no "*/:<>?\\| or control characters,
+    no trailing dot or space, no reserved device names, at most 255 characters."""
+    n = _FAT_BAD.sub("_", name).rstrip(" .") or "_"
+    if n.split(".")[0].upper() in _FAT_RESERVED:
+        n = "_" + n
+    if len(n) > 255:
+        stem, dot, ext = n.rpartition(".")
+        n = (stem[:254 - len(ext)] + "." + ext) if dot and len(ext) <= 5 else n[:255]
+    return n
+
+
+def jpeg_problem(d, size=None):
+    """Why the radio's hardware decoder won't show this JPEG, or None
+    (as jpeg_unsupported() in the firmware's art_service.c, plus its size limits)."""
+    if (size if size is not None else len(d)) > FW_COVER_MAX:
+        return "picture over 2 MB"
+    if d[:4] == b"\x89PNG":
+        return "PNG picture"
+    if len(d) < 4 or d[:2] != b"\xff\xd8":
+        return "not a JPEG"
+    i = 2
+    while i + 4 <= len(d):
+        if d[i] != 0xFF:
+            return "damaged JPEG"
+        m = d[i + 1]
+        if m == 0xFF:
+            i += 1
+            continue
+        ln = (d[i + 2] << 8) | d[i + 3]
+        if m in (0xC2, 0xC6, 0xCA, 0xCE):
+            return "progressive JPEG"
+        if m in (0xC0, 0xC1):
+            if i + 12 > len(d):
+                return None                      # cut short here: can't tell, assume fine
+            h, w = (d[i + 5] << 8) | d[i + 6], (d[i + 7] << 8) | d[i + 8]
+            nf = d[i + 9]
+            if nf == 3 and d[i + 11] not in (0x11, 0x21, 0x22):
+                return "unsupported JPEG sampling"
+            if nf not in (1, 3):
+                return "unsupported JPEG colour format"
+            if w > FW_COVER_DIM or h > FW_COVER_DIM:
+                return f"picture larger than {FW_COVER_DIM} pixels"
+            return None
+        if (0xC3 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC)) or m == 0xDA:
+            return "unsupported JPEG type"
+        i += 2 + ln
+    return None                                  # header not in the bytes we have
+
+
+def mp3_art_problem(head):
+    """Why the radio can't show the picture in this MP3's ID3v2 tag, or None
+    (no tag, no picture, or a usable one).  head: the file's first bytes."""
+    if head[:3] != b"ID3" or len(head) < 10:
+        return None
+    ver, flags = head[3], head[5]
+    if flags & 0x80:                             # unsynchronised tag: rare, don't guess
+        return None
+    syncsafe = lambda b: (b[0] << 21) | (b[1] << 14) | (b[2] << 7) | b[3]
+    end = 10 + syncsafe(head[6:10])
+    pos = 10
+    if flags & 0x40 and ver >= 3:                # extended header
+        pos += syncsafe(head[10:14]) if ver == 4 else 4 + int.from_bytes(head[10:14], "big")
+    idlen, hdrlen = (3, 6) if ver == 2 else (4, 10)
+    while pos + hdrlen <= min(end, len(head)):
+        fid = head[pos:pos + idlen]
+        if fid[:1] == b"\0":
+            break
+        if ver == 2:
+            fsize = int.from_bytes(head[pos + 3:pos + 6], "big")
+        elif ver == 4:
+            fsize = syncsafe(head[pos + 4:pos + 8])
+        else:
+            fsize = int.from_bytes(head[pos + 4:pos + 8], "big")
+        body = pos + hdrlen
+        if fid in (b"APIC", b"PIC"):
+            data = head[body:body + fsize]
+            enc = data[0] if data else 0
+            if fid == b"PIC":
+                i = 5                            # encoding, 3-char format, picture type
+            else:
+                i = data.find(b"\0", 1) + 2      # encoding, mime\0, picture type
+            term = b"\0\0" if enc in (1, 2) else b"\0"
+            j = data.find(term, i)
+            while enc in (1, 2) and j >= 0 and (j - i) % 2:
+                j = data.find(term, j + 1)       # UTF-16: the terminator is on a 2-byte boundary
+            if j < 0:
+                return None
+            return jpeg_problem(data[j + len(term):], fsize - (j + len(term)))
+        pos = body + fsize
+    return None
+
+
+def _cover_ok(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256 * 1024)
+        return jpeg_problem(head, os.path.getsize(path)) is None
+    except OSError:
+        return False
+
+
+def _cover_jpeg(path):
+    """A folder picture made into one the radio shows: baseline JPEG <= 1000 px."""
+    from PIL import Image
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        im.thumbnail((1000, 1000), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88, progressive=False, subsampling=2)
+        return buf.getvalue()
+
+
+def music_source(src):
+    """(path, folder on the stick) from a path or a {'path','dest'} dict.  The
+    default folder is the source folder's own name; '' = straight into music/."""
+    if isinstance(src, dict):
+        path = os.path.abspath(os.path.expanduser(src["path"]))
+        dest = src.get("dest")
+    else:
+        path, dest = os.path.abspath(os.path.expanduser(src)), None
+    if dest is None:
+        dest = "" if os.path.isfile(path) else os.path.basename(path.rstrip("/\\"))
+    dest = "/".join(fat_name(x) for x in str(dest).replace("\\", "/").split("/") if x.strip(" ."))
+    return path, dest
+
+
+def music_plan(sources, root):
+    """What copying these folders/files to root/music would do.
+    sources: paths, or {'path', 'dest'} dicts (see music_source).
+    -> {'items': [{src, rel, size, action}], 'tracks_new', 'bytes', 'free',
+        'left_out': {ext: n}, 'renamed': [(src, rel)], 'skipped': [(src, why)], 'warnings': [...]}
+    action: 'copy' (new), 'replace' (different), 'same', 'cover' (picture converted),
+    'elsewhere' (the same song is already in another folder on the stick: not copied)."""
+    mdir = os.path.join(root, "music")
+    items, renamed, skipped, left_out, warnings = [], [], [], {}, []
+    taken = {}                                   # lower-case rel -> src (FAT ignores case)
+    on_stick = {}                                # (lower-case name, size) -> folder, songs already there
+    if os.path.isdir(mdir):
+        for d, dirs, files in os.walk(mdir):
+            dirs[:] = [x for x in dirs if not x.startswith(".")]
+            for f in files:
+                if f.lower().endswith(".mp3") and not f.startswith("."):
+                    try:
+                        size = os.path.getsize(os.path.join(d, f))
+                    except OSError:
+                        continue
+                    on_stick.setdefault((f.lower(), size), os.path.relpath(d, mdir).replace(os.sep, "/"))
+
+    def add(src, parts, kind):
+        rel_parts = [fat_name(p) for p in parts]
+        if len(rel_parts) - 1 > FW_MUSIC_DEPTH:
+            skipped.append((src, f"more than {FW_MUSIC_DEPTH} folders deep"))
+            return
+        rel = "/".join(rel_parts)
+        if fw_bytes(rel) > FW_MUSIC_PATH_MAX:   # shorten the file name, keep the extension
+            stem, _, ext = rel_parts[-1].rpartition(".")
+            room = FW_MUSIC_PATH_MAX - fw_bytes("/".join(rel_parts[:-1])) - len(ext) - 2
+            if room < 8:
+                skipped.append((src, "folder names too long for the radio"))
+                return
+            rel_parts[-1] = _cut_utf8(stem, room).rstrip(" .") + "." + ext
+            rel = "/".join(rel_parts)
+        base, n = rel, 2
+        while rel.lower() in taken and taken[rel.lower()] != src:
+            stem, _, ext = base.rpartition(".")
+            rel = f"{stem} ({n}).{ext}"
+            n += 1
+        taken[rel.lower()] = src
+        if rel_parts != list(parts) or rel != "/".join(rel_parts):
+            renamed.append((src, rel))
+        dest = os.path.join(mdir, *rel.split("/"))
+        st = os.stat(src)
+        action = "copy"
+        if kind == "cover" and not _cover_ok(src):
+            action = "cover"
+        try:
+            dt_ = os.stat(dest)
+            if action == "cover":
+                action = "same" if dt_.st_mtime >= st.st_mtime - 2 else "cover"
+            elif dt_.st_size == st.st_size and abs(dt_.st_mtime - st.st_mtime) <= 2:
+                action = "same"
+            else:
+                action = "replace"
+        except OSError:
+            where = on_stick.get((rel.rsplit("/", 1)[-1].lower(), st.st_size)) if kind == "track" else None
+            if where is not None:
+                # in the folder it is going to (another case of the name: FAT ignores case) or elsewhere
+                here = rel.rsplit("/", 1)[0] if "/" in rel else "."
+                action = "same" if where.lower() == here.lower() else "elsewhere"
+        item = {"src": src, "rel": rel, "size": st.st_size, "action": action, "kind": kind}
+        if action == "elsewhere":
+            item["where"] = "" if where == "." else where
+        items.append(item)
+
+    def consider(path, parts):
+        name = parts[-1]
+        low = name.lower()
+        stem, _, ext = low.rpartition(".")
+        if low.endswith(".mp3"):
+            add(path, parts, "track")
+        elif stem in MUSIC_COVERS and ext in ("jpg", "jpeg", "png"):
+            # keep the radio's file name (cover.jpg ...); a PNG becomes a JPEG
+            parts = parts[:-1] + [f"{stem}.jpg"]
+            add(path, parts, "cover")
+        elif "." + ext in OTHER_AUDIO:
+            left_out["." + ext] = left_out.get("." + ext, 0) + 1
+
+    for source in sources:
+        src, dest = music_source(source)
+        top = dest.split("/") if dest else []
+        if os.path.isfile(src):
+            consider(src, top + [os.path.basename(src)])
+            continue
+        if not os.path.isdir(src):
+            skipped.append((src, "not found"))
+            continue
+        for d, dirs, files in os.walk(src):
+            dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+            sub = os.path.relpath(d, src)
+            sub_parts = [] if sub == "." else sub.split(os.sep)
+            for f in sorted(files):
+                if not f.startswith("."):
+                    consider(os.path.join(d, f), top + sub_parts + [f])
+
+    todo = [i for i in items if i["action"] not in ("same", "elsewhere")]
+    elsewhere = {}
+    for i in items:
+        if i["action"] == "elsewhere":
+            elsewhere[i["where"]] = elsewhere.get(i["where"], 0) + 1
+    replaced = 0
+    for i in todo:
+        if i["action"] == "replace":
+            try:
+                replaced += os.path.getsize(os.path.join(mdir, *i["rel"].split("/")))
+            except OSError:
+                pass
+    need = sum(i["size"] for i in todo) - replaced
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        free = 0
+    have = music_summary(root)
+    tracks_new = sum(1 for i in todo if i["kind"] == "track" and i["action"] == "copy")
+    if have["songs"] + tracks_new > FW_MUSIC_TRACKS:
+        warnings.append(f"the radio lists at most {FW_MUSIC_TRACKS} songs; "
+                        f"{have['songs'] + tracks_new - FW_MUSIC_TRACKS} would not be shown")
+    if need > free - 1024 * 1024:
+        warnings.append("not enough room on the stick")
+    return {"items": items, "tracks_new": tracks_new, "bytes": max(need, 0), "free": free,
+            "elsewhere": elsewhere,
+            "left_out": left_out, "renamed": renamed, "skipped": skipped, "warnings": warnings,
+            "fits": need <= free - 1024 * 1024}
+
+
+def music_copy(plan, root, progress=None, cancelled=lambda: False):
+    """Carries out music_plan().  progress(done_bytes, total_bytes, rel) is called
+    as it goes.  -> {'copied': n, 'covers': n, 'art_problems': n, 'cancelled': bool}"""
+    if not plan["fits"]:
+        raise SystemExit("not enough room on the stick for this music")
+    mdir = os.path.join(root, "music")
+    todo = [i for i in plan["items"] if i["action"] not in ("same", "elsewhere")]
+    total = sum(i["size"] for i in todo)
+    done, out = 0, {"copied": 0, "covers": 0, "art_problems": 0, "cancelled": False}
+    for it in todo:
+        if cancelled():
+            out["cancelled"] = True
+            break
+        dest = os.path.join(mdir, *it["rel"].split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = dest + ".p4tmp"
+        if progress:
+            progress(done, total, it["rel"])
+        try:
+            if it["action"] == "cover":
+                with open(tmp, "wb") as f:
+                    f.write(_cover_jpeg(it["src"]))
+                    os.fsync(f.fileno())
+                out["covers"] += 1
+                done += it["size"]
+            else:
+                with open(it["src"], "rb") as fi, open(tmp, "wb") as fo:
+                    first = True
+                    while True:
+                        chunk = fi.read(2 * 1024 * 1024 if first else 1024 * 1024)
+                        if not chunk:
+                            break
+                        if first and it["kind"] == "track" and mp3_art_problem(chunk):
+                            out["art_problems"] += 1
+                        first = False
+                        fo.write(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total, it["rel"])
+                        if cancelled():
+                            break
+                    fo.flush()
+                    os.fsync(fo.fileno())
+                if cancelled():
+                    os.remove(tmp)
+                    out["cancelled"] = True
+                    break
+            os.replace(tmp, dest)
+            if it["action"] != "cover":
+                st = os.stat(it["src"])
+                os.utime(dest, (st.st_atime, st.st_mtime))   # so the next plan sees "same"
+            out["copied"] += 1
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+    if hasattr(os, "sync"):
+        os.sync()
+    if progress:
+        progress(done, total, "")
+    return out
+
+
+def music_summary(root):
+    """Music on the stick: {'songs', 'bytes', 'folders': [{name, songs, bytes}]} (top level)."""
+    mdir = os.path.join(root, "music")
+    out = {"songs": 0, "bytes": 0, "folders": []}
+    if not os.path.isdir(mdir):
+        return out
+    loose = {"name": "", "songs": 0, "bytes": 0}
+    for e in sorted(os.listdir(mdir), key=str.lower):
+        p = os.path.join(mdir, e)
+        if e.startswith("."):
+            continue
+        if os.path.isdir(p):
+            n = b = 0
+            for d, dirs, files in os.walk(p):
+                dirs[:] = [x for x in dirs if not x.startswith(".")]
+                for f in files:
+                    if f.lower().endswith(".mp3") and not f.startswith("."):
+                        n += 1
+                    try:
+                        b += os.path.getsize(os.path.join(d, f))
+                    except OSError:
+                        pass
+            out["folders"].append({"name": e, "songs": n, "bytes": b})
+        elif e.lower().endswith(".mp3"):
+            loose["songs"] += 1
+            loose["bytes"] += os.path.getsize(p)
+    if loose["songs"]:
+        out["folders"].insert(0, loose)
+    out["songs"] = sum(f["songs"] for f in out["folders"])
+    out["bytes"] = sum(f["bytes"] for f in out["folders"])
+    return out
+
+
+def music_remove(root, name):
+    """Deletes one top-level folder of music/ (name '' = the loose songs in music/)."""
+    mdir = os.path.realpath(os.path.join(root, "music"))
+    if name == "":
+        for e in os.listdir(mdir):
+            if e.lower().endswith(".mp3") and os.path.isfile(os.path.join(mdir, e)):
+                os.remove(os.path.join(mdir, e))
+        return
+    target = os.path.realpath(os.path.join(mdir, name))
+    if os.path.dirname(target) != mdir or not os.path.isdir(target):
+        raise ValueError("no such music folder on the stick")
+    shutil.rmtree(target)
+    if hasattr(os, "sync"):
+        os.sync()
+
+
+def _mb(n):
+    return f"{n / 1e6:.0f} MB" if n < 1e9 else f"{n / 1e9:.2f} GB"
+
+
+def cmd_music(a):
+    check_stick(a.mount, a.force)
+    if a.remove is not None:
+        music_remove(a.mount, a.remove)
+        print(f"removed music/{a.remove}")
+    if not a.sources:
+        have = music_summary(a.mount)
+        for f in have["folders"]:
+            print(f"  {f['name'] or '(loose songs)':40s} {f['songs']:5d} songs  {_mb(f['bytes'])}")
+        print(f"{have['songs']} songs, {_mb(have['bytes'])} on the stick")
+        return
+    sources = [{"path": x, "dest": a.to} if a.to is not None else x for x in a.sources]
+    plan = music_plan(sources, a.mount)
+    count = {}
+    for i in plan["items"]:
+        count[i["action"]] = count.get(i["action"], 0) + 1
+    print(f"{count.get('copy', 0)} new, {count.get('replace', 0)} changed, {count.get('cover', 0)} pictures "
+          f"to convert, {count.get('same', 0)} already on the stick; {_mb(plan['bytes'])} to copy, "
+          f"{_mb(plan['free'])} free")
+    for where, n in sorted(plan["elsewhere"].items()):
+        print(f"  {n} song(s) already on the stick in {'music/' + where if where else 'music/'}: not copied again")
+    for ext, n in sorted(plan["left_out"].items()):
+        print(f"  left out: {n} {ext} file(s) (the radio plays MP3 only)")
+    for src, why in plan["skipped"]:
+        print(f"  skipped: {src}: {why}")
+    for src, rel in plan["renamed"][:20]:
+        print(f"  renamed for the stick: {os.path.basename(src)} -> {rel}")
+    for w in plan["warnings"]:
+        print(f"  warning: {w}")
+    if a.dry_run or not plan["fits"]:
+        return
+    last = [0.0]
+
+    def prog(done, total, rel):
+        if time.monotonic() - last[0] > 1 or not rel:
+            last[0] = time.monotonic()
+            print(f"\r  {100 * done // max(total, 1):3d}%  {rel[-60:]:60s}", end="", flush=True)
+    res = music_copy(plan, a.mount, prog)
+    print(f"\ncopied {res['copied']} files ({res['covers']} pictures converted)"
+          + (f"; {res['art_problems']} song(s) carry a picture the radio can't show" if res["art_problems"] else ""))
+
+
 def eject(root):
     """Unmounts and powers off the stick.  -> message for the user."""
     m = _mount_of(root)
@@ -1583,6 +2015,15 @@ def main():
     s.add_argument("--force", action="store_true", help="allow a plain folder instead of a stick")
     s.add_argument("--eject", action="store_true", help="eject the stick when done")
     s.set_defaults(fn=cmd_stick)
+
+    s = sp.add_parser("music", help="copy MP3 folders to music/ on the stick, or list/remove them")
+    s.add_argument("mount")
+    s.add_argument("sources", nargs="*", help="folders or MP3 files on this computer")
+    s.add_argument("--to", metavar="FOLDER", help="folder in music/ to copy into (default: each source's name; '' = music/ itself)")
+    s.add_argument("--remove", metavar="FOLDER", help="delete this top-level folder of music/ first")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--force", action="store_true", help="allow a plain folder instead of a stick")
+    s.set_defaults(fn=cmd_music)
 
     s = sp.add_parser("report", help="show the radio's report.txt / update.txt from a stick")
     s.add_argument("mount")

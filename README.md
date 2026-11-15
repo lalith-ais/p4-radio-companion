@@ -33,7 +33,7 @@ sudo apt install mpv          # only needed for listen
 python3 p4gui.py              # or ./p4radio.py gui
 ```
 
-The page opens in your web browser. It has five steps:
+The page opens in your web browser. It has six steps:
 
 1. **USB stick**: lists removable drives and refuses anything that is not
    FAT32. It shows what is on the stick and the radio's last report, and
@@ -53,7 +53,10 @@ The page opens in your web browser. It has five steps:
    Networks this computer sees only on 5 GHz are struck through: the radio
    does 2.4 GHz only. The WiFi password is kept in memory, never in a file on
    this computer.
-5. **Write**: **Check what will change** first, then **Write to the stick**,
+5. **Music** (optional): shows the music folders on the stick (with Remove)
+   and copies folders from this computer, picked in a folder browser, each
+   into a folder on the stick you can name. See "Music" below.
+6. **Write**: **Check what will change** first, then **Write to the stick**,
    then **Eject**. If the write would take stations off the radio, the page
    names them and asks first.
 
@@ -67,11 +70,35 @@ to change), the same `library.csv` / `p4radio.json` the commands below use.
 The page talks only to the program on 127.0.0.1, with a per-run key. Close the
 terminal window (or press Ctrl+C) to stop it.
 
-Not there yet: music.
-
 A changed `wifi.txt` replaces WiFi details set up from a phone only with radio
 firmware that has that change (p4-radio after f575569); older firmware keeps
 the phone's network until `wifi forget`. Windows and macOS drive detection is written but untested.
+
+## Music
+
+```bash
+./p4radio.py music /media/$USER/STICK                          # list what is on the stick
+./p4radio.py music /media/$USER/STICK ~/Music --to favourites --dry-run
+./p4radio.py music /media/$USER/STICK ~/Albums/Abba           # into music/Abba
+./p4radio.py music /media/$USER/STICK --remove Abba
+```
+
+The radio plays MP3 files from `music/`, read in place. Copying follows its rules
+(p4-radio `library.c`, `art_service.c`):
+
+- Only `.mp3` songs are copied; FLAC, M4A, Ogg and other formats are counted and
+  left out. `cover.jpg`, `folder.jpg` and `front.jpg` go along (a PNG becomes a
+  JPEG); a picture the radio can't show (progressive, over 1600 px or 2 MB) is
+  converted to a baseline JPEG.
+- Names are made FAT32-safe (`"*/:<>?\|` become `_`, reserved names like `CON`
+  get a `_`), file names are shortened to keep paths within the radio's 191
+  bytes, and anything more than 8 folders deep is skipped.
+- A song with the same name and size anywhere on the stick is not copied again,
+  so copying a folder again only adds what is new. Each file is written under a
+  temp name and renamed; the original's time is kept for the next comparison.
+- The copy stops before it starts if the stick is too small, and warns past the
+  radio's 4000 songs. After copying, it counts songs whose embedded picture the
+  radio can't show.
 
 ## Writing the radio's USB stick
 
@@ -164,4 +191,5 @@ parser (`../p4-radio/main/station_parse.c`, or `$P4_RADIO_FW`) with gcc and
 runs it over every file it writes. Without gcc, the firmware or Pillow, those
 tests are skipped. `tests/test_gui.py` drives the configurator page's API with a
 folder standing in for the stick. `tests/test_probe.py` runs `probe()` against
-every stream `fake_icecast.py` serves.
+every stream `fake_icecast.py` serves. `tests/test_music.py` covers music
+copying, including pictures in made-up ID3 tags.

@@ -181,6 +181,34 @@ def nearby_wifi():
     return out
 
 
+def browse(path=""):
+    """Folders on this computer for the music picker -> {path, parent, dirs, mp3, places}."""
+    home = os.path.expanduser("~")
+    path = os.path.realpath(os.path.expanduser(path or home))
+    if not os.path.isdir(path):
+        raise ValueError("that folder is not there")
+    dirs, mp3 = [], 0
+    try:
+        names = sorted(os.listdir(path), key=str.lower)
+    except OSError as e:
+        raise ValueError(f"can't open that folder ({e.strerror})")
+    for n in names:
+        if n.startswith("."):
+            continue
+        full = os.path.join(path, n)
+        if os.path.isdir(full):
+            dirs.append({"name": n, "path": full})
+        elif n.lower().endswith(".mp3"):
+            mp3 += 1
+    places = [{"name": "Home", "path": home}]
+    for name in ("Music", "Desktop", "Downloads", "Documents"):
+        if os.path.isdir(os.path.join(home, name)):
+            places.append({"name": name, "path": os.path.join(home, name)})
+    parent = os.path.dirname(path)
+    return {"path": path, "parent": parent if parent != path else "", "dirs": dirs, "mp3": mp3,
+            "places": places}
+
+
 def tz_choices():
     """Zone names this computer knows, for the page's list."""
     try:
@@ -385,6 +413,22 @@ class Project:
             self.save()
             return added
 
+    def music_sources(self):
+        return [dict(zip(("path", "dest"), P.music_source(x))) for x in self.cfg.get("music_sources", [])]
+
+    def set_music_sources(self, sources):
+        """[{path, dest}] -- dest is the folder in music/ on the stick ('' = music/ itself)."""
+        clean, seen = [], set()
+        for src in sources:
+            path, dest = P.music_source(src if isinstance(src, dict) else str(src))
+            path = os.path.realpath(path)
+            if path not in seen:
+                seen.add(path)
+                clean.append({"path": path, "dest": dest})
+        with self.lock:
+            self.cfg["music_sources"] = clean
+            self.save()
+
     def set_wifi(self, mode, ssid="", password=""):
         if mode not in ("keep", "set", "remove"):
             raise ValueError("unknown WiFi choice")
@@ -490,11 +534,17 @@ class Job:
         self.lock = threading.Lock()
         self.state = "idle"
         self.log, self.result, self.error, self.kind = [], None, "", ""
+        self.progress = None                     # {done, total, now}
+        self.cancel = False
 
     def snapshot(self):
         with self.lock:
             return {"state": self.state, "log": list(self.log), "result": self.result,
-                    "error": self.error, "kind": self.kind}
+                    "error": self.error, "kind": self.kind, "progress": self.progress}
+
+    def set_progress(self, done, total, now):
+        with self.lock:
+            self.progress = {"done": done, "total": total, "now": now}
 
     def say(self, line):
         with self.lock:
@@ -505,6 +555,7 @@ class Job:
             if self.state == "running":
                 raise ValueError("the stick is already being written")
             self.state, self.log, self.result, self.error, self.kind = "running", [], None, "", kind
+            self.progress, self.cancel = None, False
 
         def run():
             try:
@@ -570,6 +621,7 @@ class App:
         self.project = project
         self.token = secrets.token_urlsafe(16)
         self.job = Job()
+        self.music_job = Job()
         self.allow_folder = allow_folder         # tests: a plain folder may stand in for a stick
         self.port = None
         self.countries = None
@@ -762,6 +814,69 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.app.countries = [{"code": c, "name": n, "count": k} for c, n, k in P.rb_countries()]
         return {"countries": self.app.countries}
 
+    def api_get_fs(self, q):
+        return browse(q.get("path", ""))
+
+    def api_get_music(self, q):
+        mount = self._check_mount(q["mount"])
+        have = P.music_summary(mount)
+        try:
+            have["free"] = shutil.disk_usage(mount).free
+        except OSError:
+            have["free"] = 0
+        have["sources"] = self.app.project.music_sources()
+        return have
+
+    def api_post_music_sources(self, q):
+        self.app.project.set_music_sources(self._json().get("sources", []))
+        return {"sources": self.app.project.music_sources()}
+
+    def api_post_music_plan(self, q):
+        mount = self._check_mount(self._json()["mount"])
+        sources = self.app.project.music_sources()
+        if not sources:
+            raise ValueError("choose a folder of music first")
+        plan = P.music_plan(sources, mount)
+        count = {}
+        for i in plan["items"]:
+            count[i["action"]] = count.get(i["action"], 0) + 1
+        return {"count": count, "bytes": plan["bytes"], "free": plan["free"], "fits": plan["fits"],
+                "elsewhere": plan["elsewhere"],
+                "left_out": plan["left_out"], "warnings": plan["warnings"],
+                "renamed": [[os.path.basename(a), b] for a, b in plan["renamed"][:50]],
+                "renamed_total": len(plan["renamed"]),
+                "skipped": [[os.path.basename(a), b] for a, b in plan["skipped"][:50]],
+                "skipped_total": len(plan["skipped"])}
+
+    def api_post_music_copy(self, q):
+        mount = self._check_mount(self._json()["mount"])
+        sources = self.app.project.music_sources()
+        if not sources:
+            raise ValueError("choose a folder of music first")
+        job = self.app.music_job
+
+        def fn(say):
+            say("looking at the music")
+            plan = P.music_plan(sources, mount)
+            return P.music_copy(plan, mount, job.set_progress, lambda: job.cancel)
+        job.start("music", fn)
+        return job.snapshot()
+
+    def api_get_music_job(self, q):
+        return self.app.music_job.snapshot()
+
+    def api_post_music_cancel(self, q):
+        self.app.music_job.cancel = True
+        return self.app.music_job.snapshot()
+
+    def api_post_music_remove(self, q):
+        b = self._json()
+        mount = self._check_mount(b["mount"])
+        if self.app.music_job.state == "running":
+            raise ValueError("wait for the copy to finish")
+        P.music_remove(mount, b.get("name", ""))
+        return self.api_get_music({"mount": mount})
+
     def api_post_wifi(self, q):
         b = self._json()
         self.app.project.set_wifi(b.get("mode", "keep"), b.get("ssid", ""), b.get("password", ""))
@@ -827,6 +942,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def api_post_eject(self, q):
         mount = self._check_mount(self._json()["mount"])
+        if self.app.music_job.state == "running" or self.app.job.state == "running":
+            raise ValueError("wait until the copying has finished")
         return {"message": P.eject(mount)}
 
 
