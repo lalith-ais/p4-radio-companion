@@ -33,7 +33,7 @@ sudo apt install mpv          # only needed for listen
 python3 p4gui.py              # or ./p4radio.py gui
 ```
 
-The page opens in your web browser. It has four steps:
+The page opens in your web browser. It has five steps:
 
 1. **USB stick**: lists removable drives and refuses anything that is not
    FAT32. It shows what is on the stick and the radio's last report, and
@@ -47,7 +47,13 @@ The page opens in your web browser. It has four steps:
    radio), switch stations on and off, listen, **Test all**, edit names and
    addresses, and click or drop a picture on a logo. Test results are in plain
    words ("Sends Opus audio; the radio plays MP3 and AAC only").
-4. **Write**: **Check what will change** first, then **Write to the stick**,
+4. **Settings**: WiFi (leave as it is, connect to a network, or take the
+   WiFi details off the stick), time zone by place (this computer's zone
+   first), EQ preset and screen brightness, each with "leave as it is".
+   Networks this computer sees only on 5 GHz are struck through: the radio
+   does 2.4 GHz only. The WiFi password is kept in memory, never in a file on
+   this computer.
+5. **Write**: **Check what will change** first, then **Write to the stick**,
    then **Eject**. If the write would take stations off the radio, the page
    names them and asks first.
 
@@ -61,7 +67,11 @@ to change), the same `library.csv` / `p4radio.json` the commands below use.
 The page talks only to the program on 127.0.0.1, with a per-run key. Close the
 terminal window (or press Ctrl+C) to stop it.
 
-Not there yet: the WiFi and settings page, and music. Windows and macOS drive detection is written but untested.
+Not there yet: music.
+
+A changed `wifi.txt` replaces WiFi details set up from a phone only with radio
+firmware that has that change (p4-radio after f575569); older firmware keeps
+the phone's network until `wifi forget`. Windows and macOS drive detection is written but untested.
 
 ## Writing the radio's USB stick
 

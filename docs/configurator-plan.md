@@ -75,8 +75,9 @@ and show what the radio stored and anything it rejected, in plain words.
 
 ### Firmware questions (decide separately)
 
-- Let a changed `wifi.txt` win over setup-page credentials (as `config.txt`
-  does), so changing WiFi in the configurator works without `wifi forget`.
+- Done in step 4: a changed `wifi.txt` wins over setup-page credentials (as
+  `config.txt` does), so changing WiFi in the configurator works without
+  `wifi forget`.
 - Optionally clear the password from the stick once imported.
 
 ## Testing
@@ -122,6 +123,12 @@ and show what the radio stored and anything it rejected, in plain words.
       all 27 real stations now test OK. Writing that would take stations off
       the radio now asks first (26 stations became 1 in the step 2 trial).
       Tested on the radio 2026-11-15: found, tested and added stations work
-- [ ] 4 WiFi, settings, report
+- [x] 4 Settings page: WiFi (keep / set / remove, nearby networks with 5 GHz-only
+      ones struck through, password in memory only), time zone by place
+      converted to POSIX, EQ, brightness. Firmware (p4-radio storage.c): a
+      changed wifi.txt now clears the setup-page credentials, an unchanged
+      one doesn't; report.txt names the network replaced. Report read-back
+      was done in step 2 (first page). Tested on the radio 2026-11-15: clock,
+      EQ and WiFi change all applied (firmware branch wifi-txt-replaces-setup)
 - [ ] 5 music
 - [ ] 6 packaging

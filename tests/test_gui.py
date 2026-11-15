@@ -330,6 +330,71 @@ class TestGui(unittest.TestCase):
                                             "country": "GB", "logo_url": ""})
         self.assertEqual(st, 200)
 
+    # -- step 4: WiFi and settings ------------------------------------------
+
+    def test_wifi_and_settings(self):
+        self.call("/api/stick/load", {"mount": self.stick})
+        # bad input is refused in plain words, and nothing changes
+        for body, words in (({"mode": "set", "ssid": "", "password": "secret123"}, "name is empty"),
+                            ({"mode": "set", "ssid": "Home", "password": "short"}, "8 to 63"),
+                            ({"mode": "odd"}, "unknown")):
+            st, err = self.call("/api/wifi", body)
+            self.assertEqual(st, 400)
+            self.assertIn(words, err["error"])
+        _, s = self.call("/api/state")
+        self.assertEqual(s["wifi"]["mode"], "keep")
+
+        st, s = self.call("/api/wifi", {"mode": "set", "ssid": "New Net", "password": "pass word 9"})
+        self.assertEqual(s["wifi"], {"mode": "set", "ssid": "New Net", "has_password": True})
+        self.assertNotIn("pass word 9", json.dumps(s))                 # never sent back
+        with open(os.path.join(self.app.project.dir, "p4radio.json")) as f:
+            self.assertNotIn("pass word 9", f.read())                 # never saved on this computer
+
+        st, err = self.call("/api/settings", {"tz_name": "Nowhere/Atlantis"})
+        self.assertEqual(st, 400)
+        st, err = self.call("/api/settings", {"brightness": 5})
+        self.assertIn("20 to 100", err["error"])
+        if os.path.exists("/usr/share/zoneinfo/Asia/Kolkata"):
+            st, s = self.call("/api/settings", {"tz_name": "Asia/Kolkata", "eq": "voice", "brightness": 60})
+            self.assertEqual(s["settings"], {"timezone": "IST-5:30", "tz_name": "Asia/Kolkata",
+                                             "eq": "voice", "brightness": 60})
+            self.assertEqual(self.call("/api/tz?name=Asia/Kolkata")[1]["posix"], "IST-5:30")
+        self.write(dry=False)
+        fw = FwParser.run(self.radio)
+        self.assertEqual(fw["W"], ("New Net", "pass word 9"))
+        if os.path.exists("/usr/share/zoneinfo/Asia/Kolkata"):
+            self.assertEqual(fw["C"], {"timezone": "IST-5:30", "eq": "voice", "brightness": "60"})
+            self.assertEqual((fw["TZ"], fw["B"], fw["CR"]), ("ok", 60, []))
+
+        # a POSIX string from a stick is kept; "leave as it is" leaves lines out
+        st, s = self.call("/api/settings", {"timezone": "GMT0BST,M3.5.0/1,M10.5.0"})
+        self.assertEqual(s["settings"], {"timezone": "GMT0BST,M3.5.0/1,M10.5.0"})
+        self.call("/api/settings", {})
+        self.call("/api/wifi", {"mode": "remove"})
+        self.write(dry=False)
+        self.assertFalse(os.path.exists(os.path.join(self.radio, "wifi.txt")))
+        with open(os.path.join(self.radio, "config.txt")) as f:
+            self.assertIn("timezone = IST-5:30", f.read())             # no settings: config.txt left alone
+
+        # open network
+        self.call("/api/wifi", {"mode": "set", "ssid": "Cafe", "password": ""})
+        self.write(dry=False)
+        self.assertEqual(FwParser.run(self.radio)["W"], ("Cafe", ""))
+
+    def test_nearby_wifi_parsing(self):
+        out = ("no:oki2g4:2412 MHz:87\nno:guest:5180 MHz:74\nyes:AX6000:5180 MHz:65\n"
+               "no:Both:2437 MHz:40\nno:Both:5500 MHz:60\nno:a\\:b:2462 MHz:10\nno::2412 MHz:50\n")
+        real_run, real_which = G.subprocess.run, G.shutil.which
+        G.subprocess.run = lambda *a, **k: type("R", (), {"stdout": out})()
+        G.shutil.which = lambda name: "/usr/bin/nmcli"
+        try:
+            n = G.nearby_wifi()
+        finally:
+            G.subprocess.run, G.shutil.which = real_run, real_which
+        self.assertEqual(n["current"], "AX6000")
+        self.assertEqual({x["ssid"]: x["band"] for x in n["networks"]},
+                         {"oki2g4": "2.4", "guest": "5", "AX6000": "5", "Both": "both", "a:b": "2.4"})
+
     def test_list_sticks_does_not_crash(self):
         for s in G.list_sticks():
             self.assertIn("usable", s)

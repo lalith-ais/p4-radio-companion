@@ -158,6 +158,22 @@ select.t { appearance: auto; }
 .play:hover { border-color: var(--accent); }
 .play.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .dropzone-on main { outline: 3px dashed var(--accent); outline-offset: -12px; }
+/* settings */
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; }
+.choice input { margin-top: 4px; }
+.choice .sub { font-size: 13px; color: var(--muted); }
+.wifi-form { margin: 4px 0 6px 28px; max-width: 460px; }
+.pw { display: flex; gap: 8px; }
+.netlist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.net { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+       border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.net.no { color: var(--muted); text-decoration: line-through; cursor: help; }
+.set-grid { display: grid; grid-template-columns: 180px 1fr; gap: 14px 18px; align-items: center; }
+.set-grid .lab { color: var(--muted); }
+.bright { display: flex; gap: 12px; align-items: center; }
+.bright input[type=range] { flex: 1; max-width: 320px; }
+h3.card-h { margin: 0 0 6px; font-size: 16px; }
+
 /* player bar */
 #player { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
           background: var(--ink); color: var(--bg); border-radius: 999px; padding: 8px 10px 8px 18px;
@@ -179,6 +195,8 @@ select.t { appearance: auto; }
   .st .badge { display: none; }
   .thumb { width: 44px; height: 44px; }
   .sgrid { grid-template-columns: 1fr; }
+  .set-grid { grid-template-columns: 1fr; gap: 4px; }
+  .wifi-form { margin-left: 0; }
   .res { grid-template-columns: 40px 1fr auto; }
   .res .play { display: none; }
 }
@@ -191,7 +209,8 @@ select.t { appearance: auto; }
     <button data-go="stick"><span class="n">1</span>USB stick</button>
     <button data-go="find"><span class="n">2</span>Find stations</button>
     <button data-go="stations"><span class="n">3</span>My stations</button>
-    <button data-go="write"><span class="n">4</span>Write</button>
+    <button data-go="settings"><span class="n">4</span>Settings</button>
+    <button data-go="write"><span class="n">5</span>Write</button>
   </nav>
   <span class="saved" id="saved"></span>
 </header>
@@ -244,6 +263,48 @@ select.t { appearance: auto; }
       <span class="count muted" id="count"></span>
     </div>
     <div id="list"></div>
+  </section>
+
+  <section id="settings">
+    <h2>WiFi and settings</h2>
+    <p class="lead">These go to the radio with the stations. Anything left as it is keeps what the radio already uses.</p>
+    <div class="card">
+      <h3 class="card-h">WiFi</h3>
+      <label class="choice"><input type="radio" name="wmode" value="keep">
+        <div><div>Leave the radio's WiFi as it is</div><div class="sub" id="wkeep-sub"></div></div></label>
+      <label class="choice"><input type="radio" name="wmode" value="set">
+        <div><div>Connect the radio to this network</div></div></label>
+      <div class="wifi-form" id="wform">
+        <label class="f" for="wssid">Network name</label>
+        <input class="t" id="wssid" autocomplete="off" spellcheck="false">
+        <div class="netlist" id="wnets"></div>
+        <label class="f" for="wpass">Password</label>
+        <div class="pw"><input class="t" id="wpass" type="password" autocomplete="new-password" spellcheck="false">
+          <button type="button" class="btn" id="wshow">Show</button></div>
+        <label class="choice small" style="padding:6px 0"><input type="checkbox" id="wopen"> <span>Open network (no password)</span></label>
+        <div class="hint" id="whint"></div>
+      </div>
+      <label class="choice"><input type="radio" name="wmode" value="remove">
+        <div><div>Take the WiFi details off the stick</div>
+        <div class="sub">The radio keeps the network it has. Choose this so the password isn't left on the stick.</div></div></label>
+      <p class="small muted" style="margin:10px 0 0">The radio uses 2.4 GHz WiFi only. The password is written to the stick
+        as plain text and kept on this computer only while this program runs. A new network written here
+        replaces one that was set up from a phone.</p>
+    </div>
+    <div class="card">
+      <h3 class="card-h">Clock, sound and screen</h3>
+      <div class="set-grid">
+        <label class="lab" for="tz">Time zone</label>
+        <div><select class="t" id="tz"></select><div class="hint" id="tzhint"></div></div>
+        <label class="lab" for="eq">Sound (EQ)</label>
+        <select class="t" id="eq"></select>
+        <span class="lab">Screen brightness</span>
+        <div><label class="choice small" style="padding:0"><input type="checkbox" id="brkeep"> <span>Leave as it is</span></label>
+          <div class="bright"><input type="range" id="br" min="20" max="100" step="5"><span id="brv"></span></div></div>
+      </div>
+      <p class="small muted" style="margin:14px 0 0">The radio applies a setting when it differs from what the stick said last time,
+        so a change made on the radio's screen afterwards stays until you change it here.</p>
+    </div>
   </section>
 
   <section id="write">
@@ -310,7 +371,7 @@ async function api(path, body, raw) {
   return j;
 }
 function take(state) {
-  if (state && state.rows) { S.rows = state.rows; S.limits = state.limits; S.settings = state.settings; S.project = state.project; }
+  if (state && state.rows) { S.rows = state.rows; S.limits = state.limits; S.settings = state.settings; S.project = state.project; S.wifi = state.wifi; }
   watchTests();
 }
 /* While stations are being tested (or logos fetched after adding), keep the list fresh. */
@@ -392,6 +453,7 @@ function go(page) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.go === page));
   if (page === "write") { renderWrite(); refreshPlan(); }
   if (page === "find") loadCountries();
+  if (page === "settings") renderSettings();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.go));
 
@@ -812,7 +874,114 @@ document.addEventListener("drop", (ev) => {
   if (S.page === "find" && /\.(m3u8?|pls)$/i.test(f.name)) addPlaylist(f);
 });
 
-/* ---------- 3. write ---------- */
+/* ---------- 4. settings ---------- */
+const EQ_LIST = ["flat", "bass", "treble", "acoustic", "live", "voice", "classical", "loudness"];
+async function renderSettings() {
+  const st = S.settings || {}, w = S.wifi || { mode: "keep" };
+  // --- WiFi
+  document.querySelectorAll("input[name=wmode]").forEach((r) => r.checked = r.value === w.mode);
+  const onStick = S.stick && S.stick.radio && S.stick.radio.wifi_ssid;
+  $("wkeep-sub").textContent = onStick ? `The stick already holds the network “${onStick}”; it stays as it is.` : "Nothing about WiFi is written.";
+  $("wform").style.display = w.mode === "set" ? "" : "none";
+  if (w.mode === "set") {
+    loadNets();
+    if (!$("wssid").value) $("wssid").value = w.ssid;
+    if (w.has_password && !$("wpass").value) $("wpass").placeholder = "(entered: type again to change)";
+  }
+  // --- time zone list (once)
+  const tz = $("tz");
+  if (!S.zones) {
+    try { S.zones = (await api("timezones")).zones; } catch (e) { S.zones = []; }
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    S.zoneHere = here;
+    const groups = {};
+    for (const z of S.zones) (groups[z.split("/")[0]] ||= []).push(z);
+    tz.innerHTML = `<option value="">Leave as it is</option><option value="__stick" hidden></option>`
+      + (S.zones.includes(here) ? `<option value="${esc(here)}">This computer's zone: ${esc(here.replace(/_/g, " "))}</option>` : "")
+      + Object.entries(groups).map(([g, zs]) => `<optgroup label="${esc(g)}">${zs.map((z) => `<option value="${esc(z)}">${esc(z.split("/").slice(1).join(" / ").replace(/_/g, " "))}</option>`).join("")}</optgroup>`).join("");
+  }
+  if (st.tz_name) tz.value = st.tz_name;
+  else if (st.timezone) {
+    // read from a stick: show it as this computer's zone when the codes match
+    let match = "";
+    try { if (S.zoneHere && (await api("tz?name=" + encodeURIComponent(S.zoneHere))).posix === st.timezone) match = S.zoneHere; } catch (e) { /* ignore */ }
+    const o = tz.querySelector('option[value="__stick"]');
+    if (match) tz.value = match;
+    else { o.hidden = false; o.textContent = `As on the stick: ${st.timezone}`; tz.value = "__stick"; }
+  } else tz.value = "";
+  $("tzhint").textContent = st.timezone ? `The radio gets the code ${st.timezone}.` : "The radio keeps the time zone it has.";
+  // --- EQ
+  const eq = $("eq");
+  if (!eq.options.length) eq.innerHTML = `<option value="">Leave as it is</option>` + EQ_LIST.map((e) => `<option value="${e}">${EQ_NAMES[e]}</option>`).join("");
+  eq.value = st.eq || "";
+  // --- brightness
+  const has = st.brightness !== undefined && st.brightness !== null && st.brightness !== "";
+  $("brkeep").checked = !has;
+  $("br").disabled = !has;
+  $("br").value = has ? st.brightness : 80;
+  $("brv").textContent = has ? st.brightness + "%" : "";
+}
+async function saveSettings() {
+  const tzv = $("tz").value, st = S.settings || {};
+  const body = { eq: $("eq").value || null, brightness: $("brkeep").checked ? null : +$("br").value };
+  if (tzv === "__stick") body.timezone = st.timezone;
+  else body.tz_name = tzv || null;
+  saved("Saving…");
+  try { take(await api("settings", body)); saved(); } catch (e) { saved(""); alert(e.message); }
+  renderSettings();
+}
+["tz", "eq"].forEach((id) => $(id).onchange = saveSettings);
+$("brkeep").onchange = () => { $("br").disabled = $("brkeep").checked; saveSettings(); };
+$("br").oninput = () => { $("brv").textContent = $("br").value + "%"; };
+$("br").onchange = saveSettings;
+
+async function saveWifi() {
+  const mode = document.querySelector("input[name=wmode]:checked").value;
+  const h = $("whint");
+  const body = { mode };
+  if (mode === "set") {
+    body.ssid = $("wssid").value;
+    body.password = $("wopen").checked ? "" : $("wpass").value;
+    if (!body.ssid) { h.className = "hint"; h.textContent = "Type or pick the network name."; return; }
+    if (!$("wopen").checked && !body.password) {
+      h.className = "hint"; h.textContent = S.wifi && S.wifi.has_password && S.wifi.ssid === body.ssid ? "Password entered." : "Type the WiFi password."; return;
+    }
+  }
+  try { take(await api("wifi", body)); h.className = "hint"; h.textContent = mode === "set" ? "OK: this network goes to the radio with the next write." : ""; }
+  catch (e) { h.className = "hint bad"; h.textContent = e.message; }
+}
+document.querySelectorAll("input[name=wmode]").forEach((r) => r.onchange = async () => {
+  $("wform").style.display = r.value === "set" ? "" : "none";
+  if (r.value === "set") {
+    if (!$("wssid").value) $("wssid").value = (S.wifi && S.wifi.ssid) || (S.stick && S.stick.radio && S.stick.radio.wifi_ssid) || "";
+    loadNets();
+    $("whint").textContent = ""; $("wpass").focus();
+    if (S.wifi.mode === "set") return;
+    const ok = $("wssid").value && ($("wpass").value || $("wopen").checked);
+    if (ok) saveWifi();
+    return;
+  }
+  saveWifi();
+});
+["wssid", "wpass"].forEach((id) => $(id).onchange = saveWifi);
+$("wopen").onchange = () => { $("wpass").disabled = $("wopen").checked; saveWifi(); };
+$("wshow").onclick = () => { const p = $("wpass"); p.type = p.type === "password" ? "text" : "password"; $("wshow").textContent = p.type === "password" ? "Show" : "Hide"; };
+async function loadNets() {
+  if (S.nets) return;
+  try { S.nets = await api("wifi_nearby"); } catch (e) { S.nets = { networks: [] }; }
+  const box = $("wnets");
+  box.innerHTML = S.nets.networks.slice(0, 12).map((n) => n.band === "5"
+    ? `<button type="button" class="net no" title="This computer sees ${esc(n.ssid)} on 5 GHz only; the radio needs 2.4 GHz">${esc(n.ssid)}</button>`
+    : `<button type="button" class="net" data-net="${esc(n.ssid)}">${esc(n.ssid)}</button>`).join("");
+  box.querySelectorAll("[data-net]").forEach((b) => b.onclick = () => { $("wssid").value = b.dataset.net; $("wpass").value = ""; $("wpass").focus(); });
+  const w = $("wssid");
+  if (!w.value) {
+    const cur = S.nets.networks.find((n) => n.ssid === S.nets.current && n.band !== "5");
+    if (cur) w.value = cur.ssid;
+  }
+}
+
+/* ---------- 5. write ---------- */
 const EQ_NAMES = { flat: "Flat", bass: "Bass boost", treble: "Treble", acoustic: "Acoustic", live: "Live", voice: "Voice", classical: "Classical", loudness: "Loudness" };
 function renderWrite() {
   const box = $("writebox");
@@ -821,7 +990,7 @@ function renderWrite() {
   const logos = on.filter((r) => r.logo).length;
   const fail = on.filter((r) => r.status === "FAIL"), untested = on.filter((r) => !r.status);
   const st = S.settings || {};
-  const set = [st.timezone && `time zone ${st.timezone}`, st.eq && `EQ ${EQ_NAMES[st.eq] || st.eq}`, st.brightness && `brightness ${st.brightness}%`].filter(Boolean).join(", ");
+  const set = [st.timezone && `time zone ${st.tz_name ? st.tz_name.replace(/_/g, " ") : st.timezone}`, st.eq && `EQ ${EQ_NAMES[st.eq] || st.eq}`, st.brightness && `brightness ${st.brightness}%`].filter(Boolean).join(", ");
   const j = S.job || { state: "idle" };
   const busy = j.state === "running";
   let warn = "";
@@ -842,8 +1011,8 @@ function renderWrite() {
       <dt>Stick</dt><dd>${esc(S.stick.name)} <span class="muted small">(${esc(S.stick.mount)})</span></dd>
       <dt>Stations</dt><dd>${on.length}${untested.length ? ` <span class="muted small">(${untested.length} not tested)</span>` : ""}</dd>
       <dt>Logos</dt><dd>${logos}${on.length - logos ? ` <span class="muted small">(${on.length - logos} show initials)</span>` : ""}</dd>
-      <dt>Settings</dt><dd>${set || `<span class="muted">none (the radio keeps its own)</span>`}</dd>
-      <dt>WiFi</dt><dd><span class="muted">left as it is on the stick${S.stick.radio && S.stick.radio.wifi_ssid ? ` (“${esc(S.stick.radio.wifi_ssid)}”)` : ""}</span></dd>
+      <dt>Settings</dt><dd>${set || `<span class="muted">none (the radio keeps its own)</span>`} <button class="link small" onclick="go('settings')">change</button></dd>
+      <dt>WiFi</dt><dd>${wifiLine()} <button class="link small" onclick="go('settings')">change</button></dd>
     </dl>${warn}
     <div class="row" style="margin-top:16px">
       <button class="btn" id="wcheck" ${busy || !on.length ? "disabled" : ""}>Check what will change</button>
@@ -856,6 +1025,12 @@ function renderWrite() {
     startJob(false, drop.length > 0);
   };
   const ej = $("weject"); if (ej) ej.onclick = eject;
+}
+function wifiLine() {
+  const w = S.wifi || { mode: "keep" }, onStick = S.stick && S.stick.radio && S.stick.radio.wifi_ssid;
+  if (w.mode === "set") return `the radio joins “${esc(w.ssid)}”`;
+  if (w.mode === "remove") return onStick ? `taken off the stick (the radio keeps its network)` : `<span class="muted">nothing on the stick</span>`;
+  return `<span class="muted">left as it is${onStick ? ` (the stick holds “${esc(onStick)}”)` : ""}</span>`;
 }
 function jobBlock(j) {
   if (j.state === "idle") return "";
@@ -904,7 +1079,7 @@ async function eject() {
   await pollSticks();
   renderSticks();
   const want = location.hash.slice(1);
-  go(["stick", "find", "stations", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
+  go(["stick", "find", "stations", "settings", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
   setInterval(pollSticks, 3000);
 })();
 </script>

@@ -18,6 +18,7 @@ import http.server
 import json
 import os
 import plistlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -150,6 +151,48 @@ def mount_stick(dev):
         raise ValueError(r.stderr.strip() or "could not mount the stick")
 
 
+def nearby_wifi():
+    """Networks this computer can see (Linux, NetworkManager) -> {current, networks}.
+    band: '2.4', '5' or 'both' -- the radio's ESP32-C6 only does 2.4 GHz."""
+    out = {"current": "", "networks": []}
+    if not shutil.which("nmcli"):
+        return out
+    try:
+        txt = subprocess.run(["nmcli", "-t", "-f", "ACTIVE,SSID,FREQ,SIGNAL", "dev", "wifi", "list"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    nets = {}
+    for ln in txt.splitlines():
+        parts = re.split(r"(?<!\\):", ln)              # nmcli -t escapes ':' in values as '\:'
+        if len(parts) < 4 or not parts[1]:
+            continue
+        active, ssid, freq, signal = parts[0], parts[1].replace("\\:", ":"), parts[2], parts[3]
+        mhz = int(re.match(r"\d+", freq).group()) if re.match(r"\d+", freq) else 0
+        n = nets.setdefault(ssid, {"ssid": ssid, "g24": False, "g5": False, "signal": 0})
+        n["g24"] |= mhz < 3000
+        n["g5"] |= mhz >= 3000
+        n["signal"] = max(n["signal"], int(signal or 0))
+        if active == "yes":
+            out["current"] = ssid
+    for n in sorted(nets.values(), key=lambda n: -n["signal"]):
+        out["networks"].append({"ssid": n["ssid"], "signal": n["signal"],
+                                "band": "both" if n["g24"] and n["g5"] else "2.4" if n["g24"] else "5"})
+    return out
+
+
+def tz_choices():
+    """Zone names this computer knows, for the page's list."""
+    try:
+        import zoneinfo
+        names = zoneinfo.available_timezones()
+    except Exception:
+        names = set()
+    keep = ("Africa/", "America/", "Antarctica/", "Asia/", "Atlantic/", "Australia/", "Europe/",
+            "Indian/", "Pacific/")
+    return sorted(n for n in names if n.startswith(keep))
+
+
 # --------------------------------------------------------------------------
 # the project: station list, settings, logos on this computer
 # --------------------------------------------------------------------------
@@ -169,6 +212,8 @@ class Project:
             self._give_id(r)
         self._logo_cache = {}
         self.testing = set()                     # ids being tested now
+        # WiFi for the next write: kept in memory only, never in a file on this computer.
+        self.wifi = {"mode": "keep", "ssid": "", "password": ""}
         self._pool = cf.ThreadPoolExecutor(6)
 
     # -- testing --------------------------------------------------------
@@ -264,7 +309,9 @@ class Project:
                          "testing": r["id"] in self.testing,
                          "logo": bool(r["logo"]),
                          "logo_v": hashlib.sha1(r["logo"].encode()).hexdigest()[:8] if r["logo"] else ""})
+        w = self.wifi
         return {"project": self.dir, "rows": rows, "settings": self.cfg.get("settings", {}),
+                "wifi": {"mode": w["mode"], "ssid": w["ssid"], "has_password": bool(w["password"])},
                 "limits": {"name": P.FW_NAME_MAX, "name_warn": P.NAME_WARN,
                            "stations": P.FW_STATIONS_MAX}}
 
@@ -337,6 +384,34 @@ class Project:
                 self.cfg["settings"] = info["settings"]
             self.save()
             return added
+
+    def set_wifi(self, mode, ssid="", password=""):
+        if mode not in ("keep", "set", "remove"):
+            raise ValueError("unknown WiFi choice")
+        if mode == "set":
+            P.wifi_text(ssid, password)          # raises ValueError with a plain reason
+        with self.lock:
+            self.wifi = {"mode": mode, "ssid": ssid if mode == "set" else self.wifi["ssid"],
+                         "password": password if mode == "set" else ""}
+
+    def set_settings(self, tz_name=None, eq=None, brightness=None, timezone=None):
+        """None = leave the radio's own value (the line is left out of config.txt).
+        tz_name is a zone such as Europe/London; timezone a POSIX string as read
+        from a stick (kept as it is when no zone name is known for it)."""
+        new = {}
+        if tz_name:
+            new["timezone"] = P.tz_posix(tz_name)
+            new["tz_name"] = tz_name
+        elif timezone:
+            new["timezone"] = timezone
+        if eq:
+            new["eq"] = eq
+        if brightness not in (None, ""):
+            new["brightness"] = int(brightness)
+        P.config_text(new)                       # raises ValueError with a plain reason
+        with self.lock:
+            self.cfg["settings"] = new
+            self.save()
 
     # -- logos ----------------------------------------------------------
 
@@ -470,6 +545,7 @@ def write_job(project, mount, dry_run, allow_folder=False):
         with project.lock:
             rows = [dict(r) for r in project.on_radio()]
             settings = dict(project.cfg.get("settings", {}))
+            w = dict(project.wifi)
         if not rows:
             raise SystemExit("no stations are switched on for the radio")
         say(f"preparing {sum(1 for r in rows if r['logo'])} logos")
@@ -477,6 +553,8 @@ def write_job(project, mount, dry_run, allow_folder=False):
                               render=lambda src, size, bg: project.render(src, size))
         say("writing" if not dry_run else "comparing with the stick")
         res = P.write_stick(mount, rows, settings=settings, logos=logos,
+                            wifi=(w["ssid"], w["password"]) if w["mode"] == "set" else None,
+                            wifi_remove=w["mode"] == "remove",
                             project=() if dry_run else (project.lib, project.cfg_path),
                             dry_run=dry_run, log=say)
         return res
@@ -683,6 +761,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.app.countries is None:
             self.app.countries = [{"code": c, "name": n, "count": k} for c, n, k in P.rb_countries()]
         return {"countries": self.app.countries}
+
+    def api_post_wifi(self, q):
+        b = self._json()
+        self.app.project.set_wifi(b.get("mode", "keep"), b.get("ssid", ""), b.get("password", ""))
+        return self.app.project.view()
+
+    def api_get_wifi_nearby(self, q):
+        return nearby_wifi()
+
+    def api_post_settings(self, q):
+        b = self._json()
+        self.app.project.set_settings(b.get("tz_name"), b.get("eq"), b.get("brightness"), b.get("timezone"))
+        return self.app.project.view()
+
+    def api_get_timezones(self, q):
+        return {"zones": tz_choices()}
+
+    def api_get_tz(self, q):
+        return {"posix": P.tz_posix(q.get("name", ""))}
 
     def api_get_preview_error(self, q):
         return {"error": self.app.preview_errors.get(q.get("url", ""), "")}
