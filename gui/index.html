@@ -270,7 +270,7 @@ function go(page) {
   if (location.hash !== "#" + page) history.replaceState(null, "", "#" + page);
   document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === page));
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.go === page));
-  if (page === "write") renderWrite();
+  if (page === "write") { renderWrite(); refreshPlan(); }
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.go));
 
@@ -286,7 +286,8 @@ async function pollSticks() {
       const usable = S.sticks.filter((s) => s.usable);
       if (!S.stick && usable.length === 1) S.stick = usable[0];
       renderSticks();
-      if (S.page === "write") renderWrite();
+      if (!S.rows.length) renderList();
+      if (S.page === "write") { renderWrite(); refreshPlan(); }
     }
   } catch (e) { /* program gone: the next poll says so */ }
 }
@@ -342,13 +343,15 @@ function renderSticks() {
     try { const j = await api("sticks/mount", { dev: b.dataset.mount }); S.sticksKey = ""; await pollSticks(); }
     catch (e) { alert(e.message); b.disabled = false; b.textContent = "Open it"; }
   });
-  box.querySelectorAll("[data-load]").forEach((b) => b.onclick = async () => {
-    if (S.rows.length && !confirm(`Replace the ${S.rows.length} stations on this computer with the ones on the stick?`)) return;
-    b.disabled = true; b.textContent = "Loading…";
-    try { take(await api("stick/load", { mount: S.stick.mount })); saved(); renderList(); renderSticks(); go("stations"); }
-    catch (e) { alert(e.message); b.disabled = false; }
-  });
+  box.querySelectorAll("[data-load]").forEach((b) => b.onclick = () => loadStick(b));
   const n = $("next1"); if (n) n.onclick = () => go("stations");
+}
+
+async function loadStick(b) {
+  if (S.rows.length && !confirm(`Replace the ${S.rows.length} stations on this computer with the ones on the stick?`)) return;
+  b.disabled = true; b.textContent = "Loading…";
+  try { take(await api("stick/load", { mount: S.stick.mount })); saved(); renderList(); renderSticks(); go("stations"); }
+  catch (e) { alert(e.message); b.disabled = false; }
 }
 
 /* ---------- 2. stations ---------- */
@@ -357,7 +360,13 @@ function renderList() {
   $("count").innerHTML = `<b>${on}</b> of ${S.rows.length} on the radio` + (on > max ? ` — <span style="color:var(--bad)">the radio holds ${max}</span>` : "");
   const box = $("list");
   if (!S.rows.length) {
-    box.innerHTML = `<div class="card empty">No stations yet.<br>Load them from a stick on the first page, or add one with <b>+ Add a station</b>.</div>`;
+    const n = S.stick && S.stick.radio ? S.stick.radio.stations : 0;
+    box.innerHTML = n
+      ? `<div class="card empty">Your list is empty, but the stick <b>${esc(S.stick.name)}</b> has ${n} station${n > 1 ? "s" : ""}.<br>
+         Load ${n > 1 ? "them" : "it"} first to keep ${n > 1 ? "them" : "it"} on the radio and add to ${n > 1 ? "them" : "it"}.<br><br>
+         <button class="btn primary" id="loadhere">Load the ${n} station${n > 1 ? "s" : ""} from the stick</button></div>`
+      : `<div class="card empty">No stations yet.<br>Load them from a stick on the first page, or add one with <b>+ Add a station</b>.</div>`;
+    const b = $("loadhere"); if (b) b.onclick = () => loadStick(b);
     return;
   }
   box.innerHTML = `<div class="list">` + S.rows.map((r, i) => {
@@ -516,6 +525,16 @@ function renderWrite() {
   let warn = "";
   if (!on.length) warn += `<div class="msg bad">No stations are switched on for the radio.</div>`;
   if (on.length > (S.limits.stations || 255)) warn += `<div class="msg bad">The radio holds ${S.limits.stations} stations; only the first ${S.limits.stations} are written.</div>`;
+  const drop = (S.plan && S.plan.mount === S.stick.mount) ? S.plan.drop : [];
+  if (drop.length) {
+    const all = drop.length === S.plan.stick_stations;
+    const names = drop.slice(0, 8).map((d) => esc(d.name || guess(d.url))).join(", ") + (drop.length > 8 ? ` and ${drop.length - 8} more` : "");
+    const many = drop.length > 1, them = many ? "them" : "it";
+    const head = all ? (many ? `Writing replaces all ${drop.length} stations now on this stick.` : "Writing replaces the station now on this stick.")
+                     : `${drop.length} station${many ? "s" : ""} on this stick ${many ? "are" : "is"} not in your list.`;
+    warn += `<div class="msg bad"><b>${head}</b> ${many ? "They" : "It"} will be removed from the radio: ${names}.
+      ${all && on.length < 5 ? `<br>If you meant to keep ${them}, go to <button class="link" onclick="go('stick')">USB stick</button> and load ${them} first.` : ""}</div>`;
+  }
   if (fail.length) warn += `<div class="msg warn">${fail.length} station${fail.length > 1 ? "s" : ""} did not work when tested: ${fail.map((r) => esc(r.name || host(r.url))).join(", ")}.</div>`;
   box.innerHTML = `<div class="card"><dl class="summary">
       <dt>Stick</dt><dd>${esc(S.stick.name)} <span class="muted small">(${esc(S.stick.mount)})</span></dd>
@@ -530,7 +549,10 @@ function renderWrite() {
       ${busy ? `<span class="spinner"></span><span class="muted">${j.kind === "write" ? "Writing…" : "Checking…"}</span>` : ""}
     </div>${jobBlock(j)}</div>`;
   $("wcheck").onclick = () => startJob(true);
-  $("wgo").onclick = () => startJob(false);
+  $("wgo").onclick = () => {
+    if (drop.length && !confirm(`${drop.length} station${drop.length > 1 ? "s" : ""} now on the stick will be removed from the radio.\n\nWrite anyway?`)) return;
+    startJob(false, drop.length > 0);
+  };
   const ej = $("weject"); if (ej) ej.onclick = eject;
 }
 function jobBlock(j) {
@@ -550,15 +572,22 @@ function jobBlock(j) {
     <li>To see what the radio stored, plug the stick back into this computer: the first page shows its report.</li></ol>
     <div class="row" style="margin-top:12px"><button class="btn primary" id="weject">Eject the stick</button><span id="ejmsg" class="muted"></span></div>`;
 }
-async function startJob(dry) {
-  try { S.job = await api("write", { mount: S.stick.mount, dry_run: dry }); renderWrite(); pollJob(); }
+async function refreshPlan() {
+  if (!S.stick) { S.plan = null; return; }
+  const mount = S.stick.mount;
+  try { S.plan = Object.assign(await api("plan?mount=" + encodeURIComponent(mount)), { mount }); }
+  catch (e) { S.plan = null; }
+  if (S.page === "write") renderWrite();
+}
+async function startJob(dry, allowDrop) {
+  try { S.job = await api("write", { mount: S.stick.mount, dry_run: dry, allow_drop: !!allowDrop }); renderWrite(); pollJob(); }
   catch (e) { alert(e.message); }
 }
 async function pollJob() {
   try { S.job = await api("job"); } catch (e) { return; }
   if (S.page === "write") renderWrite();
   if (S.job.state === "running") setTimeout(pollJob, 400);
-  else { S.sticksKey = ""; pollSticks(); }
+  else { S.sticksKey = ""; pollSticks(); refreshPlan(); }
 }
 async function eject() {
   try { const j = await api("eject", { mount: S.stick.mount }); $("ejmsg").textContent = j.message; }

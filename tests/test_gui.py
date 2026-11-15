@@ -106,8 +106,8 @@ class TestGui(unittest.TestCase):
             time.sleep(0.05)
         self.fail("job did not finish")
 
-    def write(self, dry):
-        st, j = self.call("/api/write", {"mount": self.stick, "dry_run": dry})
+    def write(self, dry, allow_drop=False):
+        st, j = self.call("/api/write", {"mount": self.stick, "dry_run": dry, "allow_drop": allow_drop})
         self.assertEqual(st, 200, j)
         j = self.wait_job()
         self.assertEqual(j["state"], "done", j)
@@ -158,7 +158,7 @@ class TestGui(unittest.TestCase):
         st, err = self.call("/api/rows/add", {"name": "Again", "url": "https://d.example/new"})
         self.assertIn("already", err["error"])
 
-        res = self.write(dry=False)
+        res = self.write(dry=False, allow_drop=True)          # "two" is switched off
         self.assertEqual(res["stations"], 3)
         fw = FwParser.run(self.radio)
         self.assertEqual(fw["S"], [("Three FM", "https://c.example/three"),
@@ -203,6 +203,29 @@ class TestGui(unittest.TestCase):
         j = self.wait_job()
         self.assertEqual(j["state"], "error")
         self.assertIn("no stations", j["error"])
+
+    def test_dropping_stations_needs_confirming(self):
+        # an empty project, one new station: writing would wipe the stick's three
+        self.call("/api/rows/add", {"name": "New", "url": "https://d.example/new"})
+        st, plan = self.call("/api/plan?mount=" + self.stick)
+        self.assertEqual(plan["stick_stations"], 3)
+        self.assertEqual([d["url"] for d in plan["drop"]],
+                         ["https://a.example/one", "http://b.example/two", "https://c.example/three"])
+        st, err = self.call("/api/write", {"mount": self.stick})
+        self.assertEqual(st, 400)
+        self.assertIn("remove 3 station", err["error"])
+        with open(os.path.join(self.radio, "stations.txt")) as f:
+            self.assertIn("a.example", f.read())                 # untouched
+        self.assertEqual(self.write(dry=True)["stations"], 1)   # a check is always allowed
+        st, j = self.call("/api/write", {"mount": self.stick, "allow_drop": True})
+        self.assertEqual(self.wait_job()["state"], "done")
+        self.assertEqual(self.call("/api/plan?mount=" + self.stick)[1]["drop"], [])
+
+        # loaded first, nothing is dropped; switching one off drops just that one
+        _, s = self.call("/api/stick/load", {"mount": self.stick})
+        self.assertEqual(self.call("/api/plan?mount=" + self.stick)[1]["drop"], [])
+        self.call("/api/rows", {"rows": [{"id": s["rows"][0]["id"], "on": False}]})
+        self.assertEqual(len(self.call("/api/plan?mount=" + self.stick)[1]["drop"]), 1)
 
     def test_list_sticks_does_not_crash(self):
         for s in G.list_sticks():

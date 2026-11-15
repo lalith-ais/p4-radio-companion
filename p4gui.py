@@ -347,6 +347,20 @@ class Job:
         threading.Thread(target=run, daemon=True).start()
 
 
+def write_plan(project, mount):
+    """Which stations now on the stick a write would take off the radio."""
+    info = P.read_stick(mount)
+    with project.lock:
+        urls = set()
+        for r in project.on_radio()[:P.FW_STATIONS_MAX]:
+            try:
+                urls.add(P.fw_url(r["url"]))
+            except ValueError:
+                pass
+    drop = [{"name": n, "url": u} for n, u in info["stations"] if u not in urls]
+    return {"stick_stations": len(info["stations"]), "drop": drop}
+
+
 def write_job(project, mount, dry_run, allow_folder=False):
     def fn(say):
         if not allow_folder:
@@ -522,10 +536,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.app.project.clear_logo(int(self._json()["id"]))
         return self.app.project.view()
 
+    def api_get_plan(self, q):
+        return write_plan(self.app.project, self._check_mount(q["mount"]))
+
     def api_post_write(self, q):
         b = self._json()
         mount = self._check_mount(b["mount"])
         dry = bool(b.get("dry_run"))
+        if not dry and not b.get("allow_drop"):
+            drop = write_plan(self.app.project, mount)["drop"]
+            if drop:
+                raise ValueError(f"writing would remove {len(drop)} station(s) from the radio; "
+                                 "confirm that first")
         self.app.job.start("check" if dry else "write",
                            write_job(self.app.project, mount, dry, self.app.allow_folder))
         return self.app.job.snapshot()
