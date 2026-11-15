@@ -34,10 +34,12 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          set +e +o pipefail      # GitHub runs bash with -e -o pipefail: a grep with no match would end the step
           rc=0
           for t in test_stick test_music test_probe test_gui; do
             python tests/$t.py > $t.log 2>&1 || rc=1
             tail -n 3 $t.log
+            echo "::notice title=$t on $RUNNER_OS::$(grep -E '^Ran |^OK|^FAILED' $t.log | tr '\n' ' ')"
             grep -E '^(FAIL|ERROR): ' $t.log | while read -r line; do
               echo "::error title=$t on $RUNNER_OS::$line"
             done
