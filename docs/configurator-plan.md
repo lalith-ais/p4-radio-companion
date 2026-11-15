@@ -129,7 +129,9 @@ and show what the radio stored and anything it rejected, in plain words.
       changed wifi.txt now clears the setup-page credentials, an unchanged
       one doesn't; report.txt names the network replaced. Report read-back
       was done in step 2 (first page). Tested on the radio 2026-11-15: clock,
-      EQ and WiFi change all applied (firmware branch wifi-txt-replaces-setup)
+      EQ and WiFi change all applied (firmware dc3a8cd, merged into p4-radio
+      main). Full restore tested 2026-11-15: flash wiped, fresh build, radio set
+      up from the stick alone (WiFi, 35 stations, 35 logos, time zone, EQ)
 - [x] 5 Music page and `music` command: MP3s (+ folder pictures, converted when
       the radio can't show them) into a named folder in music/, FAT32-safe names,
       the radio's path/depth/count limits, songs already anywhere on the stick
@@ -137,11 +139,15 @@ and show what the radio stored and anything it rejected, in plain words.
       the real stick (FAT32 renames, 2 s file times, picture conversion) with a
       test folder, removed afterwards. Tested on the radio 2026-11-15: copied
       music plays
-- [~] 6 Packaging: `packaging/build.py` (PyInstaller, icon drawn in the script,
+- [x] 6 Packaging: `packaging/build.py` (PyInstaller, icon drawn in the script,
       tzdata + certifi bundled), `.github/workflows/build.yml` (Windows, macOS
       arm64, Linux). App mode: small Tk window (Open the page / Quit), fixed
       port 47860 so a second start reopens the running one. Linux build tested
       here (stick, WiFi list, https search/preview, time zones, logos, check,
       window under Xvfb); fixed on the way: LD_LIBRARY_PATH made lsblk fail in
-      the packaged app. Windows/macOS: built and tested on GitHub, then by hand
-      on real machines (stick detection, eject and WiFi list there are untested)
+      the packaged app. v0.1.3 (2026-11-15): all four test suites pass on
+      Windows, macOS and Linux on GitHub, and all three programs build. Fixed
+      on the way: HTTPServer's getfqdn() lookup hung on macOS, and the CI test
+      step stopped after the first suite (bash -e -o pipefail).
+      Not yet tried by hand on a real Windows PC or Mac: stick detection, eject
+      and the nearby-WiFi list there have only run in tests
