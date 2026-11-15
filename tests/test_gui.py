@@ -68,7 +68,7 @@ class FakeIcecast:
 @unittest.skipIf(Image is None, "needs Pillow")
 class TestGui(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="p4gui-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="p4gui-"))   # macOS: /var is /private/var
         self.stick = os.path.join(self.tmp, "stick")
         self.radio = os.path.join(self.stick, "radio")
         os.makedirs(self.radio)

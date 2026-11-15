@@ -97,7 +97,7 @@ class TestPictures(unittest.TestCase):
 @unittest.skipIf(Image is None, "needs Pillow")
 class TestPlanAndCopy(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="p4music-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="p4music-"))   # macOS: /var is /private/var
         self.src = os.path.join(self.tmp, "Albums")
         self.stick = os.path.join(self.tmp, "stick")
         os.makedirs(self.stick)

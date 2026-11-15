@@ -27,15 +27,25 @@ jobs:
         run: pip install -r packaging/requirements.txt
 
       # Tests that need Linux, the firmware source or gcc skip themselves.
-      # A failure here is shown but still lets the build run, so the program
-      # can be tried on that system.
+      # Every suite runs; each failing test becomes an annotation on the run
+      # (readable without signing in). A failure still lets the build run, so
+      # the program can be tried on that system.
       - name: Tests
         continue-on-error: true
+        shell: bash
         run: |
-          python tests/test_stick.py
-          python tests/test_music.py
-          python tests/test_probe.py
-          python tests/test_gui.py
+          rc=0
+          for t in test_stick test_music test_probe test_gui; do
+            python tests/$t.py > $t.log 2>&1 || rc=1
+            tail -n 3 $t.log
+            grep -E '^(FAIL|ERROR): ' $t.log | while read -r line; do
+              echo "::error title=$t on $RUNNER_OS::$line"
+            done
+            grep -E '^[A-Za-z]*Error: ' $t.log | head -n 3 | while read -r line; do
+              echo "::error title=$t on $RUNNER_OS (detail)::$line"
+            done
+          done
+          exit $rc
 
       - name: Build
         run: python packaging/build.py

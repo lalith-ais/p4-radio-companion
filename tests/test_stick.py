@@ -82,7 +82,7 @@ class FwParser:
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="p4stick-")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="p4stick-"))   # macOS: /var is /private/var
         self.stick = os.path.join(self.tmp, "stick")
         os.makedirs(self.stick)
         self.radio = os.path.join(self.stick, "radio")
