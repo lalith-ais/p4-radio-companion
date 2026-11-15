@@ -16,14 +16,13 @@ settings in `p4radio.json`, in the `P4Radio` folder in your home folder.
 
 ## Download and run (no Python needed)
 
-The programs are built by GitHub Actions: open the latest run under
-**Actions → build** and download from **Artifacts** (signed in to GitHub).
+Download from the [latest release](https://github.com/lalith-ais/p4-radio-companion/releases/latest):
 
 | System | File | First start |
 |---|---|---|
-| Windows 10/11 | `P4 Radio Setup.exe` | Windows may say "Windows protected your PC": click **More info**, then **Run anyway** (the program isn't signed). |
+| Windows 10/11 | `P4-Radio-Setup-Windows.exe` | Windows may say "Windows protected your PC": click **More info**, then **Run anyway** (the program isn't signed). |
 | macOS (Apple silicon) | `P4-Radio-Setup-macOS.zip`: unzip, move `P4 Radio Setup.app` to Applications | macOS says it can't check the developer: open **System Settings → Privacy & Security** and click **Open Anyway** (or right-click the app, **Open**). |
-| Linux (x86-64) | `p4-radio-setup` | `chmod +x p4-radio-setup`, then run it. |
+| Linux (x86-64) | `p4-radio-setup-linux-x86_64` | `chmod +x p4-radio-setup-linux-x86_64`, then run it. |
 
 It opens the setup page in your web browser and shows a small window: keep it
 open while you use the page, and click **Quit** when you are done. Starting it
@@ -278,4 +277,5 @@ PyInstaller only builds for the system it runs on, so
 on GitHub: push a tag such as `v0.2`, or **Actions → build → Run workflow**.
 Each run also runs all four test suites on each system and posts every suite's
 result as a note on the run (readable without signing in); the programs are
-the run's artifacts.
+the run's artifacts. For a `v*` tag, every test must pass, and the programs are
+then published as a GitHub release with the notes in `packaging/release-notes.md`.

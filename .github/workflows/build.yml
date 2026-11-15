@@ -1,7 +1,8 @@
 # Builds "P4 Radio Setup" for Windows, macOS (Apple silicon) and Linux.
 # PyInstaller only builds for the system it runs on, so each is built on its own.
 # Run it from the Actions tab ("Run workflow"), or push a tag such as v1.0.
-# The programs are attached to the run as artifacts.
+# The programs are attached to the run as artifacts. For a v* tag, when every
+# build and test passes, the release job publishes them as a GitHub release.
 name: build
 
 on:
@@ -31,7 +32,8 @@ jobs:
       # (readable without signing in). A failure still lets the build run, so
       # the program can be tried on that system.
       - name: Tests
-        continue-on-error: true
+        # a tag (a release) needs every test to pass; a manual run carries on
+        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/') }}
         shell: bash
         run: |
           set +e +o pipefail      # GitHub runs bash with -e -o pipefail: a grep with no match would end the step
@@ -60,3 +62,31 @@ jobs:
             dist/*.zip
             dist/p4-radio-setup
           if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Name the files for downloading
+        run: |
+          mkdir out
+          cp "artifacts/P4-Radio-Setup-Windows/P4 Radio Setup.exe" out/P4-Radio-Setup-Windows.exe
+          cp artifacts/P4-Radio-Setup-macOS/P4-Radio-Setup-macOS.zip out/P4-Radio-Setup-macOS.zip
+          cp artifacts/P4-Radio-Setup-Linux/p4-radio-setup out/p4-radio-setup-linux-x86_64
+          ls -l out
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "P4 Radio Setup $GITHUB_REF_NAME" --notes-file packaging/release-notes.md --verify-tag
