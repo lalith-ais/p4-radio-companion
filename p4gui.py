@@ -12,6 +12,7 @@ logos and the stick's files is done by p4radio.py.
 """
 
 import argparse
+import concurrent.futures as cf
 import hashlib
 import http.server
 import json
@@ -167,6 +168,69 @@ class Project:
         for r in self.rows:
             self._give_id(r)
         self._logo_cache = {}
+        self.testing = set()                     # ids being tested now
+        self._pool = cf.ThreadPoolExecutor(6)
+
+    # -- testing --------------------------------------------------------
+
+    def test(self, ids, seconds=8.0):
+        """Starts testing the stations in the background; the page polls the state."""
+        with self.lock:
+            todo = [(r["id"], r["url"]) for r in self.rows if r["id"] in ids and r["id"] not in self.testing]
+            self.testing.update(rid for rid, _ in todo)
+        for rid, url in todo:
+            self._pool.submit(self._test_one, rid, url, seconds)
+        return len(todo)
+
+    def _test_one(self, rid, url, seconds):
+        try:
+            res = P.probe(url, seconds)
+        except Exception as e:                   # probe() catches its own; belt and braces
+            res = dict(status="FAIL", notes=[f"{type(e).__name__}: {e}"])
+        with self.lock:
+            self.testing.discard(rid)
+            try:
+                r = self.row(rid)
+            except ValueError:
+                return                           # removed while it was being tested
+            if r["url"] != url:
+                return                           # address changed meanwhile
+            P.apply_probe(r, res, fill_name=False)   # an empty name stays empty: the radio uses the stream's
+            r["_title"] = res.get("title", "")
+            self.save()
+
+    def add_from(self, items, test=True):
+        """Adds [{name, url, logo_url?, genre?, country?}] -> (ids added, [problems])."""
+        added, problems, logos = [], [], []
+        with self.lock:
+            for it in items:
+                try:
+                    url = P.fw_url(it.get("url", ""))
+                except ValueError as e:
+                    problems.append(f"{it.get('name') or it.get('url')}: {e}")
+                    continue
+                if P.find_url(self.rows, url):
+                    problems.append(f"{it.get('name') or url}: already in the list")
+                    continue
+                r = P.new_row(P.fw_name(it.get("name", ""))[0], url,
+                              genre=(it.get("genre") or "")[:40], country=it.get("country") or "")
+                self._give_id(r)
+                self.rows.append(r)
+                added.append(r["id"])
+                if it.get("logo_url"):
+                    logos.append((r["id"], it["logo_url"]))
+            self.save()
+        for rid, logo_url in logos:              # favicons arrive in the background
+            self._pool.submit(self._fetch_logo, rid, logo_url)
+        if test and added:
+            self.test(set(added))
+        return added, problems
+
+    def _fetch_logo(self, rid, url):
+        try:
+            self.set_logo(rid, fetch_picture(url))
+        except Exception:
+            pass                                 # no usable favicon: the radio shows initials
 
     def _give_id(self, r):
         r["id"] = self.next_id
@@ -195,6 +259,9 @@ class Project:
             rows.append({"id": r["id"], "name": r["name"], "url": r["url"], "on": on,
                          "number": n if on else None, "status": r["status"], "codec": r["codec"],
                          "kbps": r["kbps"], "icy_name": r["icy_name"], "notes": r["notes"],
+                         "rate": r["rate"], "ch": r["ch"], "speed": r["speed"], "tested": r["tested"],
+                         "title": r.get("_title", ""), "genre": r["genre"], "country": r["country"],
+                         "testing": r["id"] in self.testing,
                          "logo": bool(r["logo"]),
                          "logo_v": hashlib.sha1(r["logo"].encode()).hexdigest()[:8] if r["logo"] else ""})
         return {"project": self.dir, "rows": rows, "settings": self.cfg.get("settings", {}),
@@ -218,16 +285,11 @@ class Project:
             self.rows = new
             self.save()
 
-    def add(self, name, url):
-        with self.lock:
-            url = P.fw_url(url)
-            if P.find_url(self.rows, url):
-                raise ValueError("that station is already in the list")
-            r = P.new_row(P.fw_name(name)[0], url)
-            self._give_id(r)
-            self.rows.append(r)
-            self.save()
-            return r["id"]
+    def add(self, name, url, **more):
+        added, problems = self.add_from([dict(more, name=name, url=url)])
+        if not added:
+            raise ValueError(problems[0].split(": ", 1)[1] if problems else "not added")
+        return added[0]
 
     def update(self, rid, name=None, url=None):
         with self.lock:
@@ -306,6 +368,42 @@ def fetch_picture(url):
     except Exception as e:
         raise ValueError(f"could not download the picture ({e})")
     return data
+
+
+# --------------------------------------------------------------------------
+# finding stations (radio-browser.info)
+# --------------------------------------------------------------------------
+
+SEARCH_PAGE = 60
+RADIO_CODECS = ("MP3", "AAC", "AAC+", "UNKNOWN", "")
+
+
+def search(project, name="", tag="", country="", offset=0):
+    params = dict(name=name.strip(), tag=tag.strip().lower(), countrycode=country,
+                  hidebroken="true", order="clickcount", reverse="true",
+                  limit=SEARCH_PAGE, offset=int(offset or 0))
+    res = P.rb_search(params)
+    with project.lock:
+        have = {r["url"] for r in project.rows}
+    out, skipped = [], 0
+    for st in res:
+        codec = (st.get("codec") or "").upper()
+        url = (st.get("url") or st.get("url_resolved") or "").strip()
+        if st.get("hls") in (1, "1", True) or codec not in RADIO_CODECS or \
+                not url.lower().startswith(("http://", "https://")):
+            skipped += 1                          # HLS, Ogg/Opus, FLAC ...: the radio can't play them
+            continue
+        try:
+            in_list = P.fw_url(url) in have
+        except ValueError:
+            skipped += 1
+            continue
+        out.append({"name": (st.get("name") or "").strip(), "url": url,
+                    "codec": "" if codec == "UNKNOWN" else codec, "kbps": st.get("bitrate") or 0,
+                    "country": st.get("countrycode") or "", "tags": st.get("tags") or "",
+                    "favicon": st.get("favicon") or "", "in_list": in_list})
+    return {"results": out, "skipped": skipped, "more": len(res) == SEARCH_PAGE,
+            "next": int(offset or 0) + len(res)}
 
 
 # --------------------------------------------------------------------------
@@ -396,6 +494,8 @@ class App:
         self.job = Job()
         self.allow_folder = allow_folder         # tests: a plain folder may stand in for a stick
         self.port = None
+        self.countries = None
+        self.preview_errors = {}                 # url -> why the last preview failed
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -449,6 +549,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, page, "text/html; charset=utf-8")
             if method == "GET" and path.startswith("/logo/"):
                 return self._logo(int(path.rsplit("/", 1)[1]))
+            if method == "GET" and path == "/preview":
+                if not secrets.compare_digest(q.get("t", ""), self.app.token):
+                    return self._send(403, {"error": "forbidden"})
+                return self._preview(q.get("url", ""))
             if not path.startswith("/api/") or not self._token_ok():
                 return self._send(404 if not path.startswith("/api/") else 403, {"error": "not found"})
             fn = getattr(self, f"api_{method.lower()}_{path[5:].replace('/', '_')}", None)
@@ -479,6 +583,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if data is None:
             return self._send(404, b"", "image/jpeg")
         self._send(200, data, "image/jpeg", [("Cache-Control", "max-age=3600")])
+
+    def _preview(self, url):
+        """Plays a station in the browser through this program, reaching it the
+        way the radio does, and only if the radio could play it."""
+        errs = self.app.preview_errors
+        errs.pop(url, None)
+        sock = None
+        try:
+            sock, code, hdrs, rest, cms, tls, cur = P.open_stream(url, 10, icy=False)
+            first = P._read_some(sock, rest, 32 * 1024, timeout=8)
+            h = P.sniff(first)
+            if not h:
+                raise P.ProbeError("no audio" if not first else "unrecognised stream")
+            if h["codec"] not in ("MP3", "AAC"):
+                raise P.ProbeError(f"{h['codec']} not supported (MP3/AAC only)")
+        except Exception as e:
+            if sock:
+                sock.close()
+            if len(errs) > 200:
+                errs.clear()
+            errs[url] = str(e)
+            return self._send(502, {"error": str(e)})
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg" if h["codec"] == "MP3" else "audio/aac")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            self.wfile.write(first)
+            sock.settimeout(20)
+            while True:
+                chunk = sock.recv(16384)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except OSError:
+            pass                                 # the page stopped playing, or the station dropped
+        finally:
+            sock.close()
 
     # -- API ------------------------------------------------------------
 
@@ -511,8 +655,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def api_post_rows_add(self, q):
         b = self._json()
-        rid = self.app.project.add(b.get("name", ""), b.get("url", ""))
+        rid = self.app.project.add(b.get("name", ""), b.get("url", ""),
+                                   logo_url=b.get("logo_url"), genre=b.get("genre"),
+                                   country=b.get("country"))
         return dict(self.app.project.view(), added=rid)
+
+    def api_post_playlist(self, q):
+        text = self._body().decode("utf-8", "replace")
+        entries = P.playlist_entries(text)
+        if not entries:
+            raise ValueError("no station addresses found in that file")
+        added, problems = self.app.project.add_from([{"name": n, "url": u} for n, u in entries])
+        return dict(self.app.project.view(), added=len(added), problems=problems)
+
+    def api_post_test(self, q):
+        b = self._json()
+        pr = self.app.project
+        with pr.lock:
+            ids = {r["id"] for r in pr.rows} if b.get("all") else {int(i) for i in b.get("ids", [])}
+        return dict(pr.view(), started=pr.test(ids))
+
+    def api_get_search(self, q):
+        return search(self.app.project, q.get("name", ""), q.get("tag", ""), q.get("country", ""),
+                      q.get("offset", 0))
+
+    def api_get_countries(self, q):
+        if self.app.countries is None:
+            self.app.countries = [{"code": c, "name": n, "count": k} for c, n, k in P.rb_countries()]
+        return {"countries": self.app.countries}
+
+    def api_get_preview_error(self, q):
+        return {"error": self.app.preview_errors.get(q.get("url", ""), "")}
 
     def api_post_rows_update(self, q):
         b = self._json()

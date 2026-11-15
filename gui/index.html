@@ -116,9 +116,9 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog form { padding: 20px 22px; }
 dialog h3 { margin: 0 0 16px; font-size: 18px; }
 label.f { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
-input.t { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+input.t, select.t { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
           background: var(--bg); color: var(--ink); }
-input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+input.t:focus, select.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 .hint { font-size: 12.5px; color: var(--muted); margin-top: 4px; min-height: 1.2em; }
 .hint.warn { color: var(--warn); } .hint.bad { color: var(--bad); }
 .logo-edit { display: flex; gap: 16px; align-items: flex-start; margin-top: 6px; }
@@ -141,11 +141,46 @@ input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-c
            border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* find */
+.sgrid { display: grid; grid-template-columns: 1.3fr 1fr 1fr auto; gap: 12px; align-items: end; }
+select.t { appearance: auto; }
+.res { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 12px; align-items: center;
+       padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.res:last-child { border-bottom: 0; }
+.fav { width: 44px; height: 44px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line);
+       display: grid; place-items: center; overflow: hidden; font-weight: 700; color: var(--muted); font-size: 15px; }
+.fav img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.res .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res .meta { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.in-list { color: var(--ok); font-size: 13px; white-space: nowrap; }
+.play { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel);
+        color: var(--accent); cursor: pointer; font-size: 13px; display: grid; place-items: center; flex: none; }
+.play:hover { border-color: var(--accent); }
+.play.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.dropzone-on main { outline: 3px dashed var(--accent); outline-offset: -12px; }
+/* player bar */
+#player { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
+          background: var(--ink); color: var(--bg); border-radius: 999px; padding: 8px 10px 8px 18px;
+          display: none; gap: 12px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,.25);
+          max-width: calc(100vw - 32px); }
+#player.on { display: flex; }
+#player .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
+#player button { border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; cursor: pointer;
+                 background: var(--bg); color: var(--ink); }
+#player.err { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); }
+.spinner.sm { width: 11px; height: 11px; border-width: 2px; vertical-align: -1px; }
+.test-box { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13.5px; }
+.test-box ul { margin: 6px 0 0; padding-left: 18px; }
+
 @media (max-width: 640px) {
   header { padding: 12px 16px; }
   .st { grid-template-columns: 18px 26px 44px 1fr auto; gap: 8px; }
+  .st .play { display: none; }
   .st .badge { display: none; }
   .thumb { width: 44px; height: 44px; }
+  .sgrid { grid-template-columns: 1fr; }
+  .res { grid-template-columns: 40px 1fr auto; }
+  .res .play { display: none; }
 }
 </style>
 </head>
@@ -154,8 +189,9 @@ input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-c
   <h1>P4 Radio Setup</h1>
   <nav>
     <button data-go="stick"><span class="n">1</span>USB stick</button>
-    <button data-go="stations"><span class="n">2</span>Stations</button>
-    <button data-go="write"><span class="n">3</span>Write</button>
+    <button data-go="find"><span class="n">2</span>Find stations</button>
+    <button data-go="stations"><span class="n">3</span>My stations</button>
+    <button data-go="write"><span class="n">4</span>Write</button>
   </nav>
   <span class="saved" id="saved"></span>
 </header>
@@ -167,12 +203,43 @@ input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-c
     <div id="sticks"></div>
   </section>
 
+  <section id="find">
+    <h2>Find stations</h2>
+    <p class="lead">Search the radio-browser.info directory. Only stations the radio can play are shown.
+      Press ▶ to listen, and <b>Add</b> to put a station in your list.</p>
+    <form class="card" id="sform">
+      <div class="sgrid">
+        <div><label class="f" for="sname">Station name</label><input class="t" id="sname" placeholder="e.g. Classic FM" autocomplete="off"></div>
+        <div><label class="f" for="stag">Genre</label><input class="t" id="stag" placeholder="e.g. jazz" list="tags" autocomplete="off"></div>
+        <div><label class="f" for="scountry">Country</label><select class="t" id="scountry"><option value="">Any country</option></select></div>
+        <div><button class="btn primary" type="submit">Search</button></div>
+      </div>
+    </form>
+    <datalist id="tags">
+      <option value="pop"><option value="rock"><option value="jazz"><option value="classical"><option value="news">
+      <option value="talk"><option value="80s"><option value="90s"><option value="dance"><option value="country">
+      <option value="chillout"><option value="oldies"><option value="hits"><option value="electronic"><option value="folk">
+    </datalist>
+    <div id="results"></div>
+    <div class="card">
+      <b>Other ways to add a station</b>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="addurl">Add by web address…</button>
+        <button class="btn" id="addpl">Add from a playlist file…</button>
+        <input type="file" id="plfile" accept=".m3u,.m3u8,.pls" hidden>
+        <span class="muted small">(.m3u or .pls, the "listen in your player" files station websites offer; you can also drop one on this page)</span>
+      </div>
+      <div id="plmsg"></div>
+    </div>
+  </section>
+
   <section id="stations">
-    <h2>Stations</h2>
+    <h2>My stations</h2>
     <p class="lead">The order here is the order on the radio. Drag a station to move it, and switch off
       any you don't want on the radio. Click a picture to change the logo.</p>
     <div class="toolbar">
-      <button class="btn primary" id="add">+ Add a station</button>
+      <button class="btn primary" id="add">+ Find more stations</button>
+      <button class="btn" id="testall">Test all</button>
       <span class="grow"></span>
       <span class="count muted" id="count"></span>
     </div>
@@ -195,6 +262,7 @@ input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-c
     <label class="f" for="durl">Stream address</label>
     <input class="t" id="durl" autocomplete="off" placeholder="https://…" spellcheck="false">
     <div class="hint" id="durl-hint"></div>
+    <div id="dtest"></div>
     <div id="dlogo-part">
       <label class="f">Logo</label>
       <div class="logo-edit">
@@ -222,6 +290,7 @@ input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-c
 </dialog>
 
 <input type="file" id="rowfile" accept="image/*" hidden>
+<div id="player" role="status"><span class="what" id="pwhat"></span><button id="pstop">Stop</button></div>
 
 <script>
 "use strict";
@@ -242,6 +311,20 @@ async function api(path, body, raw) {
 }
 function take(state) {
   if (state && state.rows) { S.rows = state.rows; S.limits = state.limits; S.settings = state.settings; S.project = state.project; }
+  watchTests();
+}
+/* While stations are being tested (or logos fetched after adding), keep the list fresh. */
+function watchTests() {
+  if (S.watch) return;
+  const busy = S.rows.some((r) => r.testing);
+  if (!busy && !(S.watchUntil > Date.now())) return;
+  S.watch = setTimeout(async () => {
+    S.watch = null;
+    try { const st = await api("state"); take(st); } catch (e) { return; }
+    if (!S.dragging) renderList();
+    refreshDialog();
+    if (S.page === "write") renderWrite();
+  }, 1200);
 }
 function saved(text) {
   $("saved").textContent = text || "Saved on this computer";
@@ -259,6 +342,43 @@ function guess(u) {
   }
   return host(u).replace(/^(www|stream|streams|icecast|media(-\w+)?)\./, "");
 }
+const NOTE_RULES = [
+  [/HLS/, "Uses HLS streaming, which the radio can't play."],
+  [/^(.+?) not supported \(MP3\/AAC only\)/, (m) => `Sends ${m[1]} audio; the radio plays MP3 and AAC only.`],
+  [/^DNS/, "The station's server can't be found (the address may be out of date)."],
+  [/^connect/, "Couldn't connect to the station's server."],
+  [/^TLS cert/, "The station's security certificate isn't valid, so the radio would refuse it."],
+  [/^TLS/, "The secure (https) connection to the station failed."],
+  [/^HTTP 404/, "The address no longer works (not found)."],
+  [/^HTTP 40[13]/, "The station refused the connection."],
+  [/^HTTP (\d+)/, (m) => `The station answered with an error (${m[1]}).`],
+  [/timeout/i, "The station didn't answer in time."],
+  [/no audio/, "The station sent no sound."],
+  [/unrecognised stream/, "The station sends something that isn't MP3 or AAC audio."],
+  [/throughput only/, "The station sends slower than it plays, so it may stop and start."],
+  [/stream stalled/, "The stream paused during the test."],
+  [/server closed stream/, "The station closed the connection during the test."],
+  [/too many redirects/, "The address keeps redirecting."],
+  [/unusual sample rate/, "Unusual sample rate."],
+  [/URL contains a space/, "The address contains a space."],
+  [/via \w+ playlist|bitrate estimated|content-type says|surrounding whitespace/, null],
+];
+function friendly(notes) {
+  const out = [];
+  for (const n of String(notes || "").split("; ").filter(Boolean)) {
+    const rule = NOTE_RULES.find(([re]) => re.test(n));
+    if (!rule) { out.push(n); continue; }
+    if (rule[1] === null) continue;
+    out.push(typeof rule[1] === "function" ? rule[1](n.match(rule[0])) : rule[1]);
+  }
+  return out;
+}
+function badge(r) {
+  if (r.testing) return `<span class="badge none"><span class="spinner sm"></span> Testing…</span>`;
+  if (!r.status) return `<span class="badge none">Not tested</span>`;
+  const label = { OK: "Works", WARN: "Works, see note", FAIL: "Not working" }[r.status] || r.status;
+  return `<span class="badge ${r.status}" title="${esc(friendly(r.notes).join(" "))}">${label}${r.codec && r.status !== "FAIL" ? " · " + esc(r.codec) : ""}</span>`;
+}
 function initials(r) {
   const n = (r.name || r.icy_name || host(r.url)).replace(/^www\./, "");
   return n.split(/[\s.\-_]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
@@ -271,6 +391,7 @@ function go(page) {
   document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === page));
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.go === page));
   if (page === "write") { renderWrite(); refreshPlan(); }
+  if (page === "find") loadCountries();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.go));
 
@@ -332,7 +453,7 @@ function renderSticks() {
     return `<div class="card stick ${sel ? "sel" : ""} ${s.usable ? "" : "bad"}" data-i="${i}">
       <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2" width="10" height="7" rx="1"/><rect x="5" y="9" width="14" height="13" rx="2"/><path d="M10 5h1M13 5h1"/></svg></div>
       <div class="grow"><h3>${esc(s.name)}${sel ? ` <span class="badge OK">chosen</span>` : ""}</h3>${body}</div></div>`;
-  }).join("") + (S.stick ? `<div class="row"><span class="grow"></span><button class="btn ${S.rows.length ? "primary" : ""}" id="next1">Next: stations →</button></div>` : "");
+  }).join("") + (S.stick ? `<div class="row"><span class="grow"></span><button class="btn ${S.rows.length ? "primary" : ""}" id="next1">Next →</button></div>` : "");
   box.querySelectorAll(".stick").forEach((el) => el.onclick = (ev) => {
     const s = S.sticks[+el.dataset.i];
     if (ev.target.closest("button,details")) return;
@@ -344,7 +465,7 @@ function renderSticks() {
     catch (e) { alert(e.message); b.disabled = false; b.textContent = "Open it"; }
   });
   box.querySelectorAll("[data-load]").forEach((b) => b.onclick = () => loadStick(b));
-  const n = $("next1"); if (n) n.onclick = () => go("stations");
+  const n = $("next1"); if (n) n.onclick = () => go(S.rows.length ? "stations" : "find");
 }
 
 async function loadStick(b) {
@@ -365,14 +486,13 @@ function renderList() {
       ? `<div class="card empty">Your list is empty, but the stick <b>${esc(S.stick.name)}</b> has ${n} station${n > 1 ? "s" : ""}.<br>
          Load ${n > 1 ? "them" : "it"} first to keep ${n > 1 ? "them" : "it"} on the radio and add to ${n > 1 ? "them" : "it"}.<br><br>
          <button class="btn primary" id="loadhere">Load the ${n} station${n > 1 ? "s" : ""} from the stick</button></div>`
-      : `<div class="card empty">No stations yet.<br>Load them from a stick on the first page, or add one with <b>+ Add a station</b>.</div>`;
+      : `<div class="card empty">No stations yet.<br>Load them from a stick on the first page, or <button class="link" onclick="go('find')">find stations</button>.</div>`;
     const b = $("loadhere"); if (b) b.onclick = () => loadStick(b);
     return;
   }
   box.innerHTML = `<div class="list">` + S.rows.map((r, i) => {
     const nm = r.name ? esc(r.name) : `<span title="No name set: the radio shows the name the station sends">${esc(r.icy_name || guess(r.url))}</span>`;
-    const st = r.status ? `<span class="badge ${r.status}" title="${esc(r.notes)}">${r.status === "OK" ? "Works" : r.status === "WARN" ? "Works, see note" : "Not working"}${r.codec ? " · " + esc(r.codec) : ""}</span>`
-                        : `<span class="badge none">Not tested</span>`;
+    const st = badge(r);
     return `<div class="st ${r.on ? "" : "off"}" draggable="true" data-i="${i}">
       <div class="handle" title="Drag to move">⋮⋮</div>
       <div class="num">${r.on ? r.number : ""}</div>
@@ -380,12 +500,14 @@ function renderList() {
       <div style="min-width:0"><div class="name ${r.name ? "" : "unnamed"}">${nm}</div><div class="url">${esc(r.url)}</div></div>
       ${st}
       <div class="acts">
+        <button class="play ${P.url === r.url ? "on" : ""}" data-play="${esc(r.url)}" data-pname="${esc(r.name || r.icy_name || guess(r.url))}" title="Listen">${P.url === r.url ? "■" : "▶"}</button>
         <label class="switch" title="On the radio"><input type="checkbox" data-on="${i}" ${r.on ? "checked" : ""}><span></span></label>
         <button class="icon-btn" data-edit="${i}" title="Edit">✎</button>
       </div></div>`;
   }).join("") + `</div>`;
 
   box.querySelectorAll("[data-on]").forEach((c) => c.onchange = () => { S.rows[+c.dataset.on].on = c.checked; pushRows(); });
+  wirePlay(box);
   box.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => openDialog(S.rows[+b.dataset.edit]));
   box.querySelectorAll(".st .name").forEach((el) => el.ondblclick = () => openDialog(S.rows[+el.closest(".st").dataset.i]));
   box.querySelectorAll("[data-logo]").forEach((t) => {
@@ -406,10 +528,10 @@ function dragRows(box) {
   box.querySelectorAll(".st").forEach((el) => {
     el.ondragstart = (ev) => {
       if (ev.target.closest(".thumb")) { ev.preventDefault(); return; }
-      from = +el.dataset.i; el.classList.add("drag"); ev.dataTransfer.effectAllowed = "move";
+      from = +el.dataset.i; S.dragging = true; el.classList.add("drag"); ev.dataTransfer.effectAllowed = "move";
       ev.dataTransfer.setData("text/plain", String(from));
     };
-    el.ondragend = () => { from = null; box.querySelectorAll(".st").forEach((x) => x.classList.remove("drag", "over-top", "over-bot")); };
+    el.ondragend = () => { from = null; S.dragging = false; box.querySelectorAll(".st").forEach((x) => x.classList.remove("drag", "over-top", "over-bot")); };
     el.ondragover = (ev) => {
       if (from === null) return;
       ev.preventDefault();
@@ -462,8 +584,8 @@ function openDialog(r) {
   $("dremove").style.display = isNew ? "none" : "";
   $("dsave").textContent = isNew ? "Add" : "Save";
   ["dname-hint", "durl-hint", "dlogo-hint"].forEach((h) => { $(h).textContent = ""; $(h).className = "hint"; });
-  if (isNew) $("durl-hint").textContent = "Searching and testing stations comes in a later version; for now paste the address.";
-  checkName(); refreshDialogLogo();
+  if (isNew) $("durl-hint").textContent = "Paste the station's stream address. It is tested after adding.";
+  checkName(); refreshDialog();
   $("dlg").showModal();
   (isNew ? $("durl") : $("dname")).focus();
 }
@@ -474,6 +596,30 @@ function checkName() {
   else { h.className = "hint"; h.textContent = v ? `${v.length} characters` : (D && D.icy_name ? `The radio will show “${D.icy_name}”.` : "The radio will show the name the station sends."); }
 }
 $("dname").oninput = checkName;
+function refreshDialog() {
+  refreshDialogLogo();
+  const box = $("dtest");
+  if (!D || !D.id) { box.innerHTML = ""; return; }
+  const r = S.rows.find((x) => x.id === D.id); if (!r) return;
+  let body;
+  if (r.testing) body = `<span class="spinner sm"></span> Testing (about 10 seconds)…`;
+  else if (!r.status) body = `Not tested yet.`;
+  else {
+    const fmt = [r.codec, r.kbps && r.kbps + " kbps", r.rate && (r.rate / 1000) + " kHz", r.ch && (r.ch == 2 ? "stereo" : "mono")].filter(Boolean).join(", ");
+    const notes = friendly(r.notes);
+    body = `${badge(r)} ${r.status !== "FAIL" ? esc(fmt) : ""} <span class="muted small">tested ${esc(r.tested)}</span>
+      ${notes.length ? `<ul>${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+      ${r.title ? `<div class="muted small" style="margin-top:4px">Playing then: ${esc(r.title)}</div>` : ""}`;
+  }
+  const useName = !$("dname").value && r.icy_name
+    ? `<button type="button" class="link small" id="duseicy">Use “${esc(r.icy_name)}” as the name</button>` : "";
+  box.innerHTML = `<div class="test-box">${body}<div class="row" style="margin-top:8px">
+      <button type="button" class="play ${P.url === r.url ? "on" : ""}" data-play="${esc(r.url)}" data-pname="${esc(r.name || r.icy_name || guess(r.url))}" title="Listen">${P.url === r.url ? "■" : "▶"}</button>
+      <button type="button" class="btn" id="dtestgo" ${r.testing ? "disabled" : ""}>Test now</button>${useName}</div></div>`;
+  wirePlay(box);
+  $("dtestgo").onclick = () => testIds([r.id]);
+  const u = $("duseicy"); if (u) u.onclick = () => { $("dname").value = r.icy_name; checkName(); u.remove(); };
+}
 function refreshDialogLogo() {
   if (!D || !D.id) return;
   const r = S.rows.find((x) => x.id === D.id); if (!r) return;
@@ -504,11 +650,167 @@ $("dform").onsubmit = async (ev) => {
   const name = $("dname").value, url = $("durl").value.trim();
   try {
     if (D.id) take(await api("rows/update", { id: D.id, name, url }));
-    else take(await api("rows/add", { name, url }));
+    else { take(await api("rows/add", { name, url })); S.watchUntil = Date.now() + 15000; watchTests(); }
     saved(); renderList(); $("dlg").close();
   } catch (e) { $("durl-hint").className = "hint bad"; $("durl-hint").textContent = e.message; }
 };
-$("add").onclick = () => openDialog(null);
+$("add").onclick = () => go("find");
+$("addurl").onclick = () => openDialog(null);
+$("testall").onclick = () => {
+  if (!S.rows.length) return;
+  testIds(null);
+};
+async function testIds(ids) {
+  try { take(await api("test", ids ? { ids } : { all: true })); renderList(); refreshDialog(); }
+  catch (e) { alert(e.message); }
+}
+
+/* ---------- player (shared by all pages) ---------- */
+const P = { audio: new Audio(), url: null, name: "", state: "" };
+P.audio.preload = "none";
+function play(url, name) {
+  if (P.url === url) { stop(); return; }
+  P.url = url; P.name = name; P.state = "connecting"; P.err = "";
+  P.audio.src = `/preview?t=${encodeURIComponent(TOKEN)}&url=${encodeURIComponent(url)}`;
+  P.audio.play().catch(() => {});
+  renderPlayer();
+}
+function stop() {
+  P.audio.pause(); P.audio.removeAttribute("src"); P.audio.load();
+  P.url = null; P.state = ""; renderPlayer();
+}
+P.audio.addEventListener("playing", () => { if (P.url) { P.state = "playing"; renderPlayer(); } });
+P.audio.addEventListener("waiting", () => { if (P.url && P.state === "playing") { P.state = "connecting"; renderPlayer(); } });
+P.audio.addEventListener("error", async () => {
+  if (!P.url) return;
+  const url = P.url, name = P.name;
+  let why = "";
+  try { why = (await api("preview_error?url=" + encodeURIComponent(url))).error; } catch (e) { /* ignore */ }
+  P.audio.removeAttribute("src");
+  P.url = null; P.state = "error"; P.err = `${name}: ${(friendly(why)[0]) || "couldn't play this station."}`;
+  renderPlayer();
+});
+function renderPlayer() {
+  const bar = $("player");
+  bar.classList.toggle("on", !!P.state);
+  bar.classList.toggle("err", P.state === "error");
+  $("pwhat").innerHTML = P.state === "connecting" ? `<span class="spinner sm"></span> Connecting to ${esc(P.name)}…`
+    : P.state === "playing" ? `▶ Playing ${esc(P.name)}` : esc(P.err);
+  $("pstop").textContent = P.state === "error" ? "Close" : "Stop";
+  document.querySelectorAll("[data-play]").forEach((b) => {
+    const on = b.dataset.play === P.url;
+    b.classList.toggle("on", on); b.textContent = on ? "■" : "▶";
+  });
+}
+$("pstop").onclick = () => { if (P.state === "error") { P.state = ""; renderPlayer(); } else stop(); };
+function wirePlay(box) {
+  box.querySelectorAll("[data-play]").forEach((b) => b.onclick = (ev) => { ev.preventDefault(); play(b.dataset.play, b.dataset.pname); });
+}
+
+/* ---------- 2. find ---------- */
+async function loadCountries() {
+  if (S.countries) return;
+  S.countries = [];
+  try {
+    const j = await api("countries");
+    S.countries = j.countries;
+    const sel = $("scountry"), keep = sel.value;
+    const names = new Intl.DisplayNames(undefined, { type: "region" });
+    const label = (c) => { try { return names.of(c.code) || c.name; } catch { return c.name; } };
+    const list = j.countries.map((c) => ({ code: c.code, label: label(c) })).sort((a, b) => a.label.localeCompare(b.label));
+    sel.innerHTML = `<option value="">Any country</option>` + list.map((c) => `<option value="${esc(c.code)}">${esc(c.label)}</option>`).join("");
+    const mine = (navigator.language.split("-")[1] || "").toUpperCase();
+    sel.value = keep || (list.some((c) => c.code === mine) ? mine : "");
+  } catch (e) { S.countries = null; }
+}
+$("sform").onsubmit = (ev) => { ev.preventDefault(); search(0); };
+/* Browsers only suggest list entries that match what is already typed, so with
+   "jazz" in the box "90s" can't be picked.  On focus the current genre moves to
+   the placeholder and the box empties (full list); leaving without typing puts
+   it back, deleting it on purpose leaves the box empty (any genre). */
+(function genreBox() {
+  const tag = $("stag"), hint = tag.placeholder;
+  let prev = "", typed = false;
+  tag.addEventListener("focus", () => {
+    typed = false; prev = tag.value;
+    if (prev) { tag.placeholder = prev; tag.value = ""; }
+  });
+  tag.addEventListener("input", (ev) => {
+    typed = true;
+    const picked = !ev.inputType || ev.inputType === "insertReplacementText";
+    if (picked && [...$("tags").options].some((o) => o.value === tag.value)) { prev = ""; search(0); }
+  });
+  tag.addEventListener("blur", () => {
+    if (!typed && !tag.value && prev) tag.value = prev;
+    tag.placeholder = hint; prev = "";
+  });
+  $("scountry").addEventListener("change", () => { if (S.results) search(0); });
+})();
+async function search(offset) {
+  const q = new URLSearchParams({ name: $("sname").value, tag: $("stag").value, country: $("scountry").value, offset });
+  const box = $("results");
+  if (!offset) box.innerHTML = `<div class="card empty"><span class="spinner"></span> Searching…</div>`;
+  try {
+    const j = await api("search?" + q);
+    S.results = offset ? S.results.concat(j.results) : j.results;
+    S.more = j.more ? j.next : 0; S.skipped = (offset ? S.skipped : 0) + j.skipped;
+    renderResults();
+  } catch (e) { box.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+function renderResults() {
+  const box = $("results"), R = S.results || [];
+  if (!R.length) {
+    box.innerHTML = `<div class="card empty">Nothing found${S.skipped ? ` that the radio can play (${S.skipped} station${S.skipped > 1 ? "s use" : " uses"} formats it can't)` : ""}. Try fewer words, or another genre.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="list">` + R.map((r, i) => {
+    const meta = [r.codec || "format unknown", r.kbps ? r.kbps + " kbps" : "", r.country, r.tags.split(",").slice(0, 3).join(", ")].filter(Boolean).join(" · ");
+    const ini = esc(r.name.split(/\s+/).filter((w) => /^[\p{L}\p{N}]/u.test(w)).slice(0, 2).map((w) => (w[0] || "").toUpperCase()).join(""));
+    return `<div class="res">
+      <div class="fav">${r.favicon ? `<img src="${esc(r.favicon)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.textContent='${ini}'">` : ini}</div>
+      <div style="min-width:0"><div class="name">${esc(r.name)}</div><div class="meta">${esc(meta)}</div></div>
+      <button class="play" data-play="${esc(r.url)}" data-pname="${esc(r.name)}" title="Listen">▶</button>
+      ${r.in_list ? `<span class="in-list">✓ In your list</span>` : `<button class="btn" data-addres="${i}">Add</button>`}
+    </div>`;
+  }).join("") + `</div>` + (S.more ? `<div class="row" style="margin:12px 0"><span class="grow"></span><button class="btn" id="smore">More results</button><span class="grow"></span></div>` : "")
+    + (S.skipped ? `<p class="muted small">${S.skipped} more station${S.skipped > 1 ? "s were" : " was"} left out: ${S.skipped > 1 ? "they use" : "it uses"} formats the radio can't play.</p>` : "");
+  wirePlay(box); renderPlayer();
+  box.querySelectorAll("[data-addres]").forEach((b) => b.onclick = async () => {
+    const r = R[+b.dataset.addres];
+    b.disabled = true; b.textContent = "Adding…";
+    try {
+      take(await api("rows/add", { name: r.name, url: r.url, logo_url: r.favicon, genre: (r.tags || "").split(",")[0], country: r.country }));
+      r.in_list = true; saved(); renderList(); renderResults();
+      S.watchUntil = Date.now() + 15000; watchTests();
+    } catch (e) { b.disabled = false; b.textContent = "Add"; alert(e.message); }
+  });
+  const m = $("smore"); if (m) m.onclick = () => { m.disabled = true; search(S.more); };
+}
+
+/* playlist files: chosen, or dropped anywhere on the Find page */
+$("addpl").onclick = () => { $("plfile").value = ""; $("plfile").click(); };
+$("plfile").onchange = () => { const f = $("plfile").files[0]; if (f) addPlaylist(f); };
+async function addPlaylist(file) {
+  const box = $("plmsg");
+  box.innerHTML = `<div class="msg"><span class="spinner sm"></span> Reading ${esc(file.name)}…</div>`;
+  try {
+    const j = await api("playlist", await file.arrayBuffer(), true);
+    take(j); saved(); renderList();
+    const probs = j.problems.length ? `<ul class="small">${j.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : "";
+    box.innerHTML = `<div class="msg ${j.added ? "ok" : "warn"}">${j.added ? `Added ${j.added} station${j.added > 1 ? "s" : ""} from ${esc(file.name)}; testing ${j.added > 1 ? "them" : "it"} now. See <button class="link" onclick="go('stations')">My stations</button>.` : `Nothing added from ${esc(file.name)}.`}${probs}</div>`;
+  } catch (e) { box.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+document.addEventListener("dragover", (ev) => {
+  if ([...ev.dataTransfer.types].includes("Files")) { ev.preventDefault(); document.body.classList.toggle("dropzone-on", S.page === "find"); }
+});
+document.addEventListener("dragleave", (ev) => { if (!ev.relatedTarget) document.body.classList.remove("dropzone-on"); });
+document.addEventListener("drop", (ev) => {
+  document.body.classList.remove("dropzone-on");
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+  if (!f) return;
+  ev.preventDefault();                       // never let the browser open the dropped file
+  if (S.page === "find" && /\.(m3u8?|pls)$/i.test(f.name)) addPlaylist(f);
+});
 
 /* ---------- 3. write ---------- */
 const EQ_NAMES = { flat: "Flat", bass: "Bass boost", treble: "Treble", acoustic: "Acoustic", live: "Live", voice: "Voice", classical: "Classical", loudness: "Loudness" };
@@ -602,7 +904,7 @@ async function eject() {
   await pollSticks();
   renderSticks();
   const want = location.hash.slice(1);
-  go(["stick", "stations", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
+  go(["stick", "find", "stations", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
   setInterval(pollSticks, 3000);
 })();
 </script>

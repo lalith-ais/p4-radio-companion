@@ -33,25 +33,35 @@ sudo apt install mpv          # only needed for listen
 python3 p4gui.py              # or ./p4radio.py gui
 ```
 
-The page opens in your web browser. It has three steps:
+The page opens in your web browser. It has four steps:
 
 1. **USB stick**: lists removable drives and refuses anything that is not
    FAT32. It shows what is on the stick and the radio's last report, and
    **Load the stations from this stick** brings in its stations, logos and
    settings.
-2. **Stations**: drag to reorder (the order is the station number on the
-   radio), switch stations on and off, edit names and addresses, and click or
-   drop a picture on a logo (or give a picture's web address).
-3. **Write**: **Check what will change** first, then **Write to the stick**,
-   then **Eject**.
+2. **Find stations**: search radio-browser.info by name, genre and country
+   (only formats the radio plays are shown), ▶ to listen, **Add** to add with
+   its logo. Stations can also be added by address or from a `.m3u` / `.pls`
+   file. New stations are tested straight away.
+3. **My stations**: drag to reorder (the order is the station number on the
+   radio), switch stations on and off, listen, **Test all**, edit names and
+   addresses, and click or drop a picture on a logo. Test results are in plain
+   words ("Sends Opus audio; the radio plays MP3 and AAC only").
+4. **Write**: **Check what will change** first, then **Write to the stick**,
+   then **Eject**. If the write would take stations off the radio, the page
+   names them and asks first.
+
+Listening goes through the program, which reaches the station the way the
+radio does (redirects, playlists, old Shoutcast servers) and refuses formats
+the radio can't play, so a station that plays here plays on the radio. No mpv
+needed. A station without a name shows the name it sends, as the radio does.
 
 The station list, settings and logos are kept in `~/P4Radio` (`--project DIR`
 to change), the same `library.csv` / `p4radio.json` the commands below use.
 The page talks only to the program on 127.0.0.1, with a per-run key. Close the
 terminal window (or press Ctrl+C) to stop it.
 
-Not there yet: search, preview and testing (next step), the WiFi and settings
-page, and music. Windows and macOS drive detection is written but untested.
+Not there yet: the WiFi and settings page, and music. Windows and macOS drive detection is written but untested.
 
 ## Writing the radio's USB stick
 
@@ -134,7 +144,8 @@ initials tile on the radio.
 
 ## Testing without the network
 
-`tests/fake_icecast.py 8765` serves MP3+ICY metadata, HE-AAC, HE-AACv2,
+`tests/fake_icecast.py 8765` serves MP3+ICY metadata (also split across
+reads, `/icysplit`), HE-AAC, HE-AACv2,
 AAC-LC, an `ICY 200 OK` server, a .pls, a 302, HLS, Opus, a throttled stream
 and a 404.
 
@@ -142,4 +153,5 @@ and a 404.
 parser (`../p4-radio/main/station_parse.c`, or `$P4_RADIO_FW`) with gcc and
 runs it over every file it writes. Without gcc, the firmware or Pillow, those
 tests are skipped. `tests/test_gui.py` drives the configurator page's API with a
-folder standing in for the stick.
+folder standing in for the stick. `tests/test_probe.py` runs `probe()` against
+every stream `fake_icecast.py` serves.

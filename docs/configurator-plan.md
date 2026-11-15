@@ -114,7 +114,14 @@ and show what the radio stored and anything it rejected, in plain words.
       stations.txt and config.txt text would change, logos pass through).
       Tested on the radio 2026-11-15: a stick written from the page with one
       new station and a new logo was imported and works
-- [ ] 3 search / preview / test
+- [x] 3 Find stations page (radio-browser search, add with favicon, .m3u/.pls
+      files, add by address), ▶ preview through `/preview` (same connection code
+      as the probe, MP3/AAC only), background tests with plain-language results.
+      Found and fixed on the way: probe() stalled when an ICY metadata block
+      arrived split across reads (Capital, LBC, Smooth Relax showed 0.00x);
+      all 27 real stations now test OK. Writing that would take stations off
+      the radio now asks first (26 stations became 1 in the step 2 trial).
+      Tested on the radio 2026-11-15: found, tested and added stations work
 - [ ] 4 WiFi, settings, report
 - [ ] 5 music
 - [ ] 6 packaging

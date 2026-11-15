@@ -28,7 +28,7 @@ class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     def log_message(self, *a): pass
 
-    def stream(self, frame, kbps, metaint=0, rate_scale=1.0, title=b"Artist - Song"):
+    def stream(self, frame, kbps, metaint=0, rate_scale=1.0, title=b"Artist - Song", split_meta=False):
         burst = 64 * 1024
         sent, t0, cnt = 0, time.monotonic(), 0
         bps = kbps * 1000 / 8 * rate_scale
@@ -45,7 +45,14 @@ class H(http.server.BaseHTTPRequestHandler):
                             if cnt == metaint:
                                 meta = b"StreamTitle='" + title + b"';"
                                 n = (len(meta) + 15) // 16
-                                out.append(n); out += meta.ljust(n * 16, b"\0"); cnt = 0
+                                block = bytes([n]) + meta.ljust(n * 16, b"\0")
+                                if split_meta:    # send it in two pieces, as big servers do
+                                    self.wfile.write(out + block[:5]); self.wfile.flush()
+                                    time.sleep(0.02)
+                                    out = bytearray(block[5:])
+                                else:
+                                    out += block
+                                cnt = 0
                     else:
                         out = bytearray(data)
                     self.wfile.write(out)
@@ -65,6 +72,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("icy-genre", "Rock"); self.send_header("icy-br", "128")
             self.send_header("icy-metaint", "8192"); self.end_headers()
             self.stream(mp3_frame(), 128, metaint=8192)
+        elif p == "/icysplit":                 # metadata blocks split across TCP sends
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg"); self.send_header("icy-name", "Split Meta FM")
+            self.send_header("icy-br", "128"); self.send_header("icy-metaint", "4000"); self.end_headers()
+            self.stream(mp3_frame(), 128, metaint=4000, split_meta=True)
         elif p == "/aacp":
             self.send_response(200)
             self.send_header("Content-Type", "audio/aacp"); self.send_header("icy-br", "64"); self.end_headers()

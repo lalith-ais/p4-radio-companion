@@ -155,7 +155,7 @@ class ProbeError(Exception):
     pass
 
 
-def _connect(url, timeout):
+def _connect(url, timeout, icy=True):
     u = urllib.parse.urlsplit(url)
     if u.scheme not in ("http", "https"):
         raise ProbeError(f"unsupported scheme {u.scheme!r}")
@@ -183,7 +183,7 @@ def _connect(url, timeout):
             raise ProbeError(f"TLS: {e}")
     hosthdr = host if (u.port is None) else f"{host}:{port}"
     req = (f"GET {path} HTTP/1.0\r\nHost: {hosthdr}\r\nUser-Agent: {UA}\r\n"
-           f"Accept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n")
+           f"Accept: */*\r\n{'Icy-MetaData: 1' + chr(13) + chr(10) if icy else ''}Connection: close\r\n\r\n")
     sock.sendall(req.encode())
     # read header block
     buf = b""
@@ -358,6 +358,75 @@ def classify_aac(h, nominal_kbps):
 # probe
 # --------------------------------------------------------------------------
 
+def open_stream(url, timeout=8.0, icy=True, hops=None, notes=None):
+    """Connects the way the radio does: follows redirects and .m3u/.pls/.asx/.xspf
+    wrappers (8 hops at most).  Raises ProbeError.
+    -> (sock, code, headers, first bytes, connect ms, tls, final url)."""
+    hops = [] if hops is None else hops
+    notes = [] if notes is None else notes
+    cur = url.strip()
+    for hop in range(8):
+        sock, code, hdrs, rest, cms, tls = _connect(cur, timeout, icy)
+        hops.append(f"{code} {cur}")
+        if code in (301, 302, 303, 307, 308):
+            sock.close()
+            loc = hdrs.get("location")
+            if not loc:
+                raise ProbeError(f"HTTP {code} without Location")
+            cur = urllib.parse.urljoin(cur, loc)
+            continue
+        if code != 200:
+            sock.close()
+            raise ProbeError(f"HTTP {code}")
+        ct = hdrs.get("content-type", "").lower()
+        path = urllib.parse.urlsplit(cur).path.lower()
+        looks_pl = (any(p in ct for p in PLAYLIST_CT)
+                    or path.endswith((".m3u", ".m3u8", ".pls", ".asx", ".xspf")))
+        if not looks_pl and (ct.startswith("text/") or not ct):
+            peek = _read_some(sock, rest, 512, timeout=2)
+            rest = peek
+            txt = peek.decode("latin-1", "replace").lstrip()
+            looks_pl = (txt.startswith(("#EXTM3U", "[playlist]", "http://", "https://", "<asx"))
+                        or txt.lower().startswith("[playlist]"))
+        if looks_pl:
+            body = _read_some(sock, rest, 64 * 1024, timeout=3)
+            sock.close()
+            nxt, kind = _parse_playlist(body.decode("utf-8", "replace"))
+            if kind == "HLS":
+                raise ProbeError("HLS (.m3u8 segments) - not supported by the radio")
+            if not nxt:
+                raise ProbeError(f"empty {kind} playlist")
+            notes.append(f"via {kind} playlist")
+            cur = urllib.parse.urljoin(cur, nxt)
+            continue
+        return sock, code, hdrs, rest, cms, tls, cur
+    raise ProbeError("too many redirects / playlist hops")
+
+
+def playlist_entries(text):
+    """All (name, url) entries of an .m3u / .pls file's text (names may be '')."""
+    t = text.lstrip("\ufeff").strip()
+    out = []
+    if t.lower().startswith("[playlist]"):
+        files, titles = {}, {}
+        for ln in t.splitlines():
+            m = re.match(r"\s*(File|Title)(\d+)\s*=\s*(.*\S)", ln, re.I)
+            if m:
+                (files if m.group(1).lower() == "file" else titles)[int(m.group(2))] = m.group(3)
+        return [(titles.get(k, ""), files[k]) for k in sorted(files)
+                if re.match(r"https?://", files[k], re.I)]
+    name = ""
+    for ln in t.splitlines():
+        ln = ln.strip()
+        if ln.upper().startswith("#EXTINF"):
+            name = ln.split(",", 1)[1].strip() if "," in ln else ""
+        elif ln and not ln.startswith("#"):
+            if re.match(r"https?://", ln, re.I):
+                out.append((name, ln))
+            name = ""
+    return out
+
+
 def probe(url, seconds=8.0, timeout=8.0):
     res = dict(status="FAIL", codec="", kbps="", rate="", ch="", tls="",
                final_url="", icy_name="", icy_genre="", connect_ms="", speed="",
@@ -369,44 +438,7 @@ def probe(url, seconds=8.0, timeout=8.0):
         res["notes"].append("URL contains a space")
         return res
     try:
-        for hop in range(8):
-            sock, code, hdrs, rest, cms, tls = _connect(cur, timeout)
-            res["hops"].append(f"{code} {cur}")
-            if code in (301, 302, 303, 307, 308):
-                sock.close()
-                loc = hdrs.get("location")
-                if not loc:
-                    raise ProbeError(f"HTTP {code} without Location")
-                cur = urllib.parse.urljoin(cur, loc)
-                continue
-            if code != 200:
-                sock.close()
-                raise ProbeError(f"HTTP {code}")
-            ct = hdrs.get("content-type", "").lower()
-            path = urllib.parse.urlsplit(cur).path.lower()
-            looks_pl = (any(p in ct for p in PLAYLIST_CT)
-                        or path.endswith((".m3u", ".m3u8", ".pls", ".asx", ".xspf")))
-            if not looks_pl and (ct.startswith("text/") or not ct):
-                peek = _read_some(sock, rest, 512, timeout=2)
-                rest = peek
-                txt = peek.decode("latin-1", "replace").lstrip()
-                looks_pl = (txt.startswith(("#EXTM3U", "[playlist]", "http://", "https://", "<asx"))
-                            or txt.lower().startswith("[playlist]"))
-            if looks_pl:
-                body = _read_some(sock, rest, 64 * 1024, timeout=3)
-                sock.close()
-                nxt, kind = _parse_playlist(body.decode("utf-8", "replace"))
-                if kind == "HLS":
-                    raise ProbeError("HLS (.m3u8 segments) - not supported by the radio")
-                if not nxt:
-                    raise ProbeError(f"empty {kind} playlist")
-                res["notes"].append(f"via {kind} playlist")
-                cur = urllib.parse.urljoin(cur, nxt)
-                continue
-            break
-        else:
-            raise ProbeError("too many redirects / playlist hops")
-
+        sock, code, hdrs, rest, cms, tls, cur = open_stream(cur, timeout, True, res["hops"], res["notes"])
         res.update(final_url=cur if cur != url.strip() else "",
                    tls="y" if tls else "n", connect_ms=cms,
                    icy_name=hdrs.get("icy-name", ""), icy_genre=hdrs.get("icy-genre", ""))
@@ -425,11 +457,13 @@ def probe(url, seconds=8.0, timeout=8.0):
         to_meta = metaint
         t_start = time.monotonic()
         marks = []                       # (t, total audio bytes)
+        need_more = False                # a metadata block is only partly in `pending`
         while True:
             now = time.monotonic()
             if now - t_start >= seconds:
                 break
-            if not pending:
+            if not pending or need_more:
+                need_more = False
                 try:
                     c = sock.recv(16384)
                 except socket.timeout:
@@ -443,6 +477,7 @@ def probe(url, seconds=8.0, timeout=8.0):
                 if metaint and to_meta == 0:
                     ln = pending[0] * 16
                     if len(pending) < 1 + ln:
+                        need_more = True     # wait for the rest of it from the socket
                         break
                     if ln:
                         meta_txt.append(bytes(pending[1:1 + ln]).rstrip(b"\0").decode("utf-8", "replace"))
@@ -517,7 +552,7 @@ def probe(url, seconds=8.0, timeout=8.0):
     return res
 
 
-def apply_probe(row, res):
+def apply_probe(row, res, fill_name=True):
     for k in ("status", "codec", "kbps", "rate", "ch", "tls", "final_url",
               "icy_name", "connect_ms", "speed"):
         row[k] = str(res.get(k, ""))
@@ -526,7 +561,7 @@ def apply_probe(row, res):
     row["notes"] = auto
     if not row.get("genre") and res.get("icy_genre"):
         row["genre"] = res["icy_genre"][:40]
-    if not row.get("name") and res.get("icy_name"):
+    if fill_name and not row.get("name") and res.get("icy_name"):
         row["name"] = res["icy_name"]
 
 
@@ -663,18 +698,29 @@ def rb_servers():
     return ["de1.api.radio-browser.info", "de2.api.radio-browser.info", "fi1.api.radio-browser.info"]
 
 
-def rb_search(params):
-    q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+def rb_get(path, params=None):
+    q = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v not in (None, "")})
     last = None
     for host in rb_servers():
         try:
-            req = urllib.request.Request(f"https://{host}/json/stations/search?{q}",
+            req = urllib.request.Request(f"https://{host}/json/{path}" + (f"?{q}" if q else ""),
                                          headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.load(r)
         except Exception as e:
             last = e
     raise SystemExit(f"radio-browser.info not reachable: {last}")
+
+
+def rb_search(params):
+    return rb_get("stations/search", params)
+
+
+def rb_countries():
+    """[(code, name, station count)], most stations first."""
+    out = [(c.get("iso_3166_1", ""), c.get("name", ""), c.get("stationcount", 0))
+           for c in rb_get("countries")]
+    return sorted((c for c in out if c[0] and c[2]), key=lambda c: -c[2])
 
 
 def cmd_search(a):

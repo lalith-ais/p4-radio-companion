@@ -10,11 +10,13 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -40,6 +42,27 @@ def png(colour, size=(200, 120)):
     b = io.BytesIO()
     Image.new("RGB", size, colour).save(b, "PNG")
     return b.getvalue()
+
+
+class FakeIcecast:
+    """tests/fake_icecast.py on a free port."""
+    def __init__(self):
+        import socket
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0))
+            port = so.getsockname()[1]
+        self.proc = subprocess.Popen([sys.executable, os.path.join(HERE, "fake_icecast.py"), str(port)])
+        self.url = f"http://127.0.0.1:{port}"
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close()
+                return
+            except OSError:
+                time.sleep(0.1)
+
+    def stop(self):
+        self.proc.kill()
+        self.proc.wait()
 
 
 @unittest.skipIf(Image is None, "needs Pillow")
@@ -226,6 +249,86 @@ class TestGui(unittest.TestCase):
         self.assertEqual(self.call("/api/plan?mount=" + self.stick)[1]["drop"], [])
         self.call("/api/rows", {"rows": [{"id": s["rows"][0]["id"], "on": False}]})
         self.assertEqual(len(self.call("/api/plan?mount=" + self.stick)[1]["drop"]), 1)
+
+    # -- step 3: playlists, testing, preview, search ----------------------
+
+    def test_playlist_files(self):
+        m3u = ("#EXTM3U\n#EXTINF:-1,Jazz Café\nhttps://j.example/live\n"
+               "#EXTINF:-1,Bad\nftp://nope\nhttp://plain.example/s\n").encode()
+        st, s = self.call("/api/playlist", raw=m3u)
+        self.assertEqual((st, s["added"]), (200, 2))
+        self.assertEqual([(r["name"], r["url"]) for r in s["rows"]],
+                         [("Jazz Café", "https://j.example/live"), ("", "http://plain.example/s")])
+        pls = b"[playlist]\nFile1=https://j.example/live\nTitle1=Jazz\nFile2=http://p.example/x\nTitle2=P\nNumberOfEntries=2\n"
+        st, s = self.call("/api/playlist", raw=pls)
+        self.assertEqual(s["added"], 1)
+        self.assertIn("already in the list", s["problems"][0])
+        self.assertEqual(self.call("/api/playlist", raw=b"hello")[0], 400)
+        # the one-line file station websites hand out
+        self.assertEqual(P.playlist_entries("https://play.ilovemusic.de/ilm_iloveradio/"),
+                         [("", "https://play.ilovemusic.de/ilm_iloveradio/")])
+
+    def test_testing_and_preview(self):
+        fake = FakeIcecast()
+        try:
+            base = fake.url
+            _, s = self.call("/api/playlist", raw=f"{base}/mp3\n{base}/ogg\n{base}/live.m3u8\n".encode())
+            ids = [r["id"] for r in s["rows"]]
+            for _ in range(200):                         # tests started on adding
+                _, s = self.call("/api/state")
+                if not any(r["testing"] for r in s["rows"]):
+                    break
+                time.sleep(0.1)
+            got = {r["url"].rsplit("/", 1)[1]: r for r in s["rows"]}
+            self.assertEqual(got["mp3"]["status"], "OK")
+            self.assertEqual(got["mp3"]["codec"], "MP3")
+            self.assertEqual(got["mp3"]["name"], "")     # names are not filled in from the stream
+            self.assertTrue(got["mp3"]["icy_name"])
+            self.assertEqual(got["ogg"]["status"], "FAIL")
+            self.assertIn("HLS", got["live.m3u8"]["notes"])
+            st, s = self.call("/api/test", {"ids": ids[:1]})
+            self.assertEqual(s["started"], 1)
+
+            # preview: MP3 streams through, Opus is refused with a reason
+            c = http.client.HTTPConnection("127.0.0.1", self.app.port, timeout=10)
+            q = urllib.parse.urlencode({"t": self.app.token, "url": f"{base}/mp3"})
+            c.request("GET", f"/preview?{q}", headers={"Host": f"127.0.0.1:{self.app.port}"})
+            r = c.getresponse()
+            self.assertEqual((r.status, r.getheader("Content-Type")), (200, "audio/mpeg"))
+            self.assertGreater(len(r.read(20000)), 10000)
+            c.close()
+            q = urllib.parse.urlencode({"t": self.app.token, "url": f"{base}/ogg"})
+            self.assertEqual(self.call(f"/preview?{q}", token=False)[0], 502)
+            _, e = self.call("/api/preview_error?" + urllib.parse.urlencode({"url": f"{base}/ogg"}))
+            self.assertIn("not supported", e["error"])
+            q = urllib.parse.urlencode({"t": "wrong", "url": f"{base}/mp3"})
+            self.assertEqual(self.call(f"/preview?{q}", token=False)[0], 403)
+        finally:
+            fake.stop()
+
+    def test_search(self):
+        canned = [
+            {"name": " Good FM ", "url": "http://g.example/s", "codec": "MP3", "bitrate": 128,
+             "countrycode": "GB", "tags": "pop,hits", "favicon": "", "hls": 0},
+            {"name": "Opus FM", "url": "http://o.example/s", "codec": "OGG", "hls": 0},
+            {"name": "HLS FM", "url": "http://h.example/s.m3u8", "codec": "AAC", "hls": 1},
+            {"name": "Mine", "url": "https://a.example/one", "codec": "AAC+", "hls": 0},
+        ]
+        seen = {}
+        real = G.P.rb_search
+        G.P.rb_search = lambda params: (seen.update(params), canned)[1]
+        try:
+            self.call("/api/stick/load", {"mount": self.stick})
+            st, j = self.call("/api/search?tag=Jazz&country=GB&name=x")
+        finally:
+            G.P.rb_search = real
+        self.assertEqual(st, 200, j)
+        self.assertEqual((seen["tag"], seen["countrycode"], seen["hidebroken"]), ("jazz", "GB", "true"))
+        self.assertEqual([(r["name"], r["in_list"]) for r in j["results"]], [("Good FM", False), ("Mine", True)])
+        self.assertEqual(j["skipped"], 2)
+        st, s = self.call("/api/rows/add", {"name": "Good FM", "url": "http://g.example/s", "genre": "pop",
+                                            "country": "GB", "logo_url": ""})
+        self.assertEqual(st, 200)
 
     def test_list_sticks_does_not_crash(self):
         for s in G.list_sticks():
