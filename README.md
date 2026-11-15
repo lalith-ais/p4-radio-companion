@@ -3,7 +3,7 @@
 One Python file, standard library only (Pillow only for logos). It keeps a master
 station library (`library.csv`, editable in LibreOffice), probes every stream the
 way the radio will, lets you audition stations in mpv, and builds the
-`stations.txt` + `logos/N.jpeg` that go to the radio.
+`stations.txt` + `N.jpg` logos that go to the radio, straight onto its USB stick.
 
 ```bash
 python3 -m venv ~/.venvs/p4radio && . ~/.venvs/p4radio/bin/activate
@@ -23,8 +23,45 @@ sudo apt install mpv          # only needed for listen
 ./p4radio.py list
 ./p4radio.py move 7 1                          # reorder (order = station numbers on the radio)
 ./p4radio.py set 4 --logo ~/art/radiox.png     # or a URL; search fills in the favicon
-./p4radio.py build --out card --logos          # card/stations.txt + card/logos/1.jpeg ...
+./p4radio.py stick /media/$USER/STICK --wifi MyNetwork --timezone Europe/London
+./p4radio.py report /media/$USER/STICK         # after the radio has imported the stick
 ```
+
+## Writing the radio's USB stick
+
+`stick` writes the `radio/` folder the firmware imports: `stations.txt`, logos
+`1.jpg … N.jpg`, `config.txt` and, when asked, `wifi.txt`. Plug the stick into
+the radio; it imports the files, restarts once and leaves `radio/report.txt`,
+which `report` prints.
+
+```bash
+./p4radio.py stick /media/$USER/STICK                    # stations + logos
+./p4radio.py stick /media/$USER/STICK --wifi MyNetwork   # asks for the password
+./p4radio.py stick /media/$USER/STICK --timezone Europe/London --eq bass --brightness 70
+./p4radio.py stick /media/$USER/STICK --dry-run          # show what would change
+./p4radio.py stick /media/$USER/STICK --eject            # unmount and power off when done
+```
+
+- Only the top of a removable FAT32 drive is accepted. exFAT and NTFS sticks
+  are refused (the radio cannot read them), and so are fixed disks.
+  `--force` writes into a plain folder instead.
+- Stations follow `build`'s rules (keep=y, tested OK or WARN). Lines are always
+  `name | url`, whatever `--line` layout `build` uses. Names are cut to the
+  radio's 47 bytes, `|` becomes `/`, and a station whose URL the radio would
+  refuse is left out, so line N always matches `N.jpg`.
+- Only changed files are rewritten, and each one goes to a temp name first and
+  is then renamed. Logos for station numbers that no longer exist, and
+  duplicates such as `3.jpeg` or `03.jpg` next to `3.jpg`, are removed.
+  `--no-logos` leaves the logos alone. A stick with no logos at all makes the
+  radio keep the logos it already has.
+- `--timezone` takes a zone name (`Europe/London`), `local`, or a POSIX string.
+  It is converted to the POSIX form the radio needs. Timezone, EQ and brightness
+  are remembered in `p4radio.json` and written to `config.txt` every time.
+- `wifi.txt` is written only with `--wifi` and removed with `--no-wifi`.
+  Otherwise it is left as it is. It holds the password in plain text. WiFi
+  details saved from the radio's phone setup page win over `wifi.txt`.
+- A copy of `library.csv` and `p4radio.json` goes into `p4radio/` on the stick.
+
 
 Selections (`test`, `listen`, `set`, `rm`) accept `all`, `3`, `1,4,7-9`, or a name fragment.
 
@@ -53,7 +90,7 @@ on every run, so you can compare runs over time.
 `p4radio.json`, and `build` writes the same layout back. Without an import the
 default is `{name}|{url}`. Override with `build --line '{url},{name}'`.
 `build` writes OK and WARN stations marked keep=y, in library order. Line N
-matches logo `N.jpeg`.
+matches logo `N.jpg`.
 
 Other `build` options: `--resolved` writes post-redirect URLs (usually leave this
 off, because CDN redirect targets often carry expiring tokens); `--header` adds a
@@ -70,3 +107,8 @@ initials tile on the radio.
 `tests/fake_icecast.py 8765` serves MP3+ICY metadata, HE-AAC, HE-AACv2,
 AAC-LC, an `ICY 200 OK` server, a .pls, a 302, HLS, Opus, a throttled stream
 and a 404.
+
+`tests/test_stick.py` tests the stick writer. It builds the radio firmware's own
+parser (`../p4-radio/main/station_parse.c`, or `$P4_RADIO_FW`) with gcc and
+runs it over every file it writes. Without gcc, the firmware or Pillow, those
+tests are skipped.

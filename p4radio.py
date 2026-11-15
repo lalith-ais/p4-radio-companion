@@ -12,9 +12,11 @@ Workflow:
     p4radio.py add     <url> --name "My Station"
     p4radio.py test                             # probe all -> station_log.md
     p4radio.py listen                           # audition with mpv, keep/drop
-    p4radio.py build   --out card/              # stations.txt + logos/N.jpeg
+    p4radio.py build   --out card/              # stations.txt + N.jpg logos in a folder
+    p4radio.py stick   /media/me/STICK          # write radio/ on the radio's USB stick
+    p4radio.py report  /media/me/STICK          # what the radio said after importing it
 
-Standard library only.  Pillow is needed only for `build --logos`
+Standard library only.  Pillow is needed only for logos (`build --logos`, `stick`)
 (pip install pillow, inside your venv).
 """
 
@@ -51,6 +53,24 @@ FIELDS = [
 P4_CPU = {"MP3": "~5.5%", "AAC-LC": "~5.3%", "HE-AAC": "~11%", "HE-AACv2": "~15%"}
 SUPPORTED = ("MP3", "AAC-LC", "HE-AAC", "HE-AACv2", "AAC")
 NAME_WARN = 24        # longer names get busy on the 800x480 player screen
+
+# Limits of the radio's import (p4-radio main/station_parse.h, storage.c, fx.c)
+FW_NAME_MAX = 47          # bytes of UTF-8
+FW_URL_MAX = 255
+FW_STATIONS_MAX = 255
+FW_SSID_MAX = 32
+FW_PASS_MAX = 63
+FW_TZ_MAX = 63
+FW_LOGO_MAX = 256 * 1024
+EQ_PRESETS = ("flat", "bass", "treble", "acoustic", "live", "voice", "classical", "loudness")
+
+
+def fw_logo_number(name):
+    """Station number the radio reads from a logo file name, or 0
+    (same rules as parse_logo_name() in the firmware's storage.c)."""
+    m = re.fullmatch(r"(\d{1,4})\.(jpg|jpeg|jpe)", name, re.I)
+    n = int(m.group(1)) if m else 0
+    return n if 1 <= n <= FW_STATIONS_MAX else 0
 
 
 # --------------------------------------------------------------------------
@@ -819,7 +839,8 @@ def cmd_listen(a):
     print("saved")
 
 
-def make_logo(src, dst, size, bg):
+def render_logo(src, size, bg):
+    """Logo from a file path or URL -> baseline 4:2:0 JPEG bytes, size x size."""
     try:
         from PIL import Image
     except ImportError:
@@ -846,17 +867,49 @@ def make_logo(src, dst, size, bg):
     im = im.resize((w, h), Image.LANCZOS)
     canvas.paste(im, ((size - w) // 2, (size - h) // 2), im)
     # baseline JPEG, 4:2:0 - what the P4 hardware decoder wants
-    canvas.save(dst, "JPEG", quality=90, optimize=False, progressive=False, subsampling=2)
+    for quality in (90, 80, 70, 60):
+        buf = io.BytesIO()
+        canvas.save(buf, "JPEG", quality=quality, optimize=False, progressive=False, subsampling=2)
+        if buf.tell() < FW_LOGO_MAX:
+            return buf.getvalue()
+    raise ValueError("logo still over 256 KB at quality 60")
+
+
+def pick_rows(rows, include_untested=False, include_failed=False):
+    """The stations that go to the radio: keep=y and tested OK/WARN, in library order."""
+    allow = {"OK", "WARN", ""} if include_untested else {"OK", "WARN"}
+    if include_failed:
+        allow |= {"FAIL"}
+    return [r for r in rows if r["keep"].lower().startswith("y") and r["status"] in allow]
+
+
+def write_logos(out_rows, size, bg, jobs=6, log=print):
+    """Renders the logos -> {station number: jpeg bytes}.  Stations without a
+    usable logo are left out (the radio shows the initials tile)."""
+    bgc = tuple(int(bg.lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
+    want = [(n, r) for n, r in enumerate(out_rows, 1) if r["logo"]]
+    for n, r in enumerate(out_rows, 1):
+        if not r["logo"]:
+            log(f"  {n:3d}. {r['name'][:30]:30s} no logo (radio shows initials)")
+    out = {}
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        futs = {ex.submit(render_logo, r["logo"], size, bgc): (n, r) for n, r in want}
+        for fu in cf.as_completed(futs):
+            n, r = futs[fu]
+            try:
+                out[n] = fu.result()
+            except SystemExit:
+                raise
+            except Exception as e:
+                log(f"  {n:3d}. {r['name'][:30]:30s} logo failed: {e}")
+    return out
 
 
 def cmd_build(a):
     rows = load_lib(a.library)
     cfg = load_cfg(a.config)
     line = a.line or cfg["line"]
-    allow = {"OK", "WARN", ""} if a.include_untested else {"OK", "WARN"}
-    if a.include_failed:
-        allow |= {"FAIL"}
-    out_rows = [r for r in rows if r["keep"].lower().startswith("y") and r["status"] in allow]
+    out_rows = pick_rows(rows, a.include_untested, a.include_failed)
     if not out_rows:
         raise SystemExit("no stations to write (run `test` first, or --include-untested)")
     os.makedirs(a.out, exist_ok=True)
@@ -874,25 +927,409 @@ def cmd_build(a):
         print(f"  note: {len(long_names)} name(s) over {NAME_WARN} chars: " + ", ".join(long_names[:5]))
 
     if a.logos:
-        ldir = os.path.join(a.out, "logos")
-        os.makedirs(ldir, exist_ok=True)
-        for f in os.listdir(ldir):
-            if re.fullmatch(r"\d+\.jpe?g", f):
-                os.remove(os.path.join(ldir, f))
-        bg = tuple(int(a.bg.lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
-        ok = 0
-        for n, r in enumerate(out_rows, 1):
-            if not r["logo"]:
-                print(f"  {n:2d}. {r['name'][:30]:30s} no logo (radio shows initials)")
-                continue
-            try:
-                make_logo(r["logo"], os.path.join(ldir, f"{n}.jpeg"), a.size, bg)
-                ok += 1
-            except SystemExit:
-                raise
-            except Exception as e:
-                print(f"  {n:2d}. {r['name'][:30]:30s} logo failed: {e}")
-        print(f"wrote {ok} logos ({a.size}x{a.size} baseline JPEG) -> {ldir}/")
+        # Same place and names as on the radio's stick: N.jpg next to stations.txt.
+        for f in os.listdir(a.out):
+            if fw_logo_number(f):
+                os.remove(os.path.join(a.out, f))
+        logos = write_logos(out_rows, a.size, a.bg)
+        for n, data in logos.items():
+            with open(os.path.join(a.out, f"{n}.jpg"), "wb") as f:
+                f.write(data)
+        print(f"wrote {len(logos)} logos ({a.size}x{a.size} baseline JPEG) -> {a.out}/N.jpg")
+
+
+# --------------------------------------------------------------------------
+# the radio's USB stick
+# --------------------------------------------------------------------------
+#
+# What the firmware reads (p4-radio main/station_parse.c, storage.c, usb_service.c):
+#   radio/stations.txt  "name | url" per line, '#' = comment
+#   radio/N.jpg         logo of station N
+#   radio/config.txt    key = value
+#   radio/wifi.txt      SSID, then password
+# and it writes radio/report.txt (import) and radio/update.txt (firmware update).
+
+def fw_bytes(s):
+    return len(s.encode("utf-8"))
+
+
+def _cut_utf8(s, limit):
+    """Longest prefix of s that is at most limit bytes of UTF-8."""
+    while fw_bytes(s) > limit:
+        s = s[:-1]
+    return s
+
+
+def fw_name(name):
+    """Station name the radio will accept -> (name, note or '')."""
+    note = ""
+    clean = "".join(ch if ch.isprintable() else " " for ch in name)
+    clean = re.sub(r"\s+", " ", clean.replace("|", "/")).strip()
+    clean = clean.lstrip("#").strip()          # a leading '#' would make the line a comment
+    if fw_bytes(clean) > FW_NAME_MAX:
+        clean = _cut_utf8(clean, FW_NAME_MAX).rstrip()
+        note = f"name cut to {FW_NAME_MAX} bytes: {clean!r}"
+    return clean, note
+
+
+def fw_url(url):
+    """URL the radio will accept, or raise ValueError with the reason."""
+    u = url.strip()
+    m = re.match(r"(https?)://", u, re.I)
+    if not m:
+        raise ValueError("not an http:// or https:// URL")
+    u = m.group(1).lower() + u[len(m.group(1)):]   # the radio only knows lower-case schemes
+    if re.search(r"\s", u):
+        raise ValueError("URL contains spaces")
+    u = u.replace("|", "%7C")                        # '|' separates name from URL
+    if fw_bytes(u) > FW_URL_MAX:
+        raise ValueError(f"URL longer than {FW_URL_MAX} bytes")
+    return u
+
+
+def stations_text(out_rows):
+    """-> (stations.txt text, rows written, [problems]).  Rows the radio would
+    reject are left out, so line N always matches logo N."""
+    lines, kept, notes = ["# P4 Radio stations, written by p4radio"], [], []
+    for r in out_rows:
+        try:
+            url = fw_url(r["url"])
+        except ValueError as e:
+            notes.append(f"left out {r['name']!r}: {e}")
+            continue
+        if len(kept) >= FW_STATIONS_MAX:
+            notes.append(f"left out {r['name']!r}: the radio holds at most {FW_STATIONS_MAX} stations")
+            continue
+        name, note = fw_name(r["name"])
+        if note:
+            notes.append(note)
+        lines.append(f"{name} | {url}" if name else url)
+        kept.append(r)
+    return "\n".join(lines) + "\n", kept, notes
+
+
+def wifi_text(ssid, password):
+    """wifi.txt contents, or raise ValueError with a plain reason."""
+    if not ssid or not ssid.strip():
+        raise ValueError("the WiFi network name is empty")
+    if "\n" in ssid or "\r" in ssid or "\n" in password or "\r" in password:
+        raise ValueError("line breaks are not allowed in the WiFi name or password")
+    if ssid.lstrip().startswith("#"):
+        raise ValueError("the radio cannot use a WiFi network name that starts with '#'")
+    if fw_bytes(ssid) > FW_SSID_MAX:
+        raise ValueError(f"the WiFi network name is longer than {FW_SSID_MAX} bytes")
+    if password and not 8 <= fw_bytes(password) <= FW_PASS_MAX:
+        raise ValueError(f"WiFi passwords are 8 to {FW_PASS_MAX} characters "
+                         "(leave it empty for an open network)")
+    return f"{ssid}\n{password}\n" if password else f"{ssid}\n"
+
+
+def tz_valid(tz):
+    """Same test as the firmware's config_timezone_valid()."""
+    if not tz or len(tz) > FW_TZ_MAX or any(not ("!" <= c <= "~") for c in tz):
+        return False
+    m = re.match(r"<[^>]{3,}>" if tz.startswith("<") else r"[A-Za-z]{3,}", tz)
+    if not m:
+        return False
+    rest = tz[m.end():]
+    return bool(re.match(r"[+-]?\d", rest))
+
+
+def tz_posix(value):
+    """POSIX TZ string from a POSIX string, a zone name like Europe/London, or
+    'local' (this computer's zone).  Raises ValueError."""
+    if tz_valid(value) and "/" not in value:
+        return value
+    if value == "local":
+        paths = ["/etc/localtime"]
+    else:
+        try:
+            import zoneinfo
+            dirs = list(zoneinfo.TZPATH)
+        except ImportError:
+            dirs = ["/usr/share/zoneinfo"]
+        paths = [os.path.join(d, value) for d in dirs]
+    for p in paths:
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        # TZif v2+ ends with "\n<POSIX TZ>\n"
+        if data[:4] == b"TZif" and data[4:5] >= b"2":
+            footer = data.rstrip(b"\n").rsplit(b"\n", 1)[-1].decode("ascii", "replace")
+            if tz_valid(footer):
+                return footer
+    raise ValueError(f"unknown timezone {value!r} (use e.g. Europe/London, or a POSIX string "
+                     "like GMT0BST,M3.5.0/1,M10.5.0)")
+
+
+def config_text(settings):
+    """config.txt from {'timezone','eq','brightness'} (any may be missing)."""
+    lines = ["# P4 Radio settings, written by p4radio"]
+    tz = settings.get("timezone")
+    if tz:
+        if not tz_valid(tz):
+            raise ValueError(f"timezone {tz!r} is not a POSIX TZ string")
+        lines.append(f"timezone = {tz}")
+    eq = settings.get("eq")
+    if eq:
+        if eq not in EQ_PRESETS:
+            raise ValueError(f"eq must be one of: {' '.join(EQ_PRESETS)}")
+        lines.append(f"eq = {eq}")
+    br = settings.get("brightness")
+    if br not in (None, ""):
+        if not 20 <= int(br) <= 100:
+            raise ValueError("brightness must be 20 to 100")
+        lines.append(f"brightness = {int(br)}")
+    return "\n".join(lines) + "\n" if len(lines) > 1 else None
+
+
+def _mount_of(path):
+    """(device, mount point, fs type) from /proc/mounts for the mount holding path."""
+    path = os.path.realpath(path)
+    best = None
+    try:
+        with open("/proc/mounts") as f:
+            for ln in f:
+                dev, mnt, fs = ln.split()[:3]
+                mnt = mnt.replace("\\040", " ")
+                if path == mnt or path.startswith(mnt.rstrip("/") + "/"):
+                    if best is None or len(mnt) > len(best[1]):
+                        best = (dev, mnt, fs)
+    except OSError:
+        pass
+    return best
+
+
+def _removable(dev):
+    """True if the block device (or its disk) is removable or hot-plugged (Linux)."""
+    if not shutil.which("lsblk"):
+        return None
+    try:
+        out = subprocess.run(["lsblk", "-sno", "RM,HOTPLUG", dev], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "1" in out.split()
+
+
+def check_stick(root, force=False):
+    """Refuses anything that is not the top of a FAT32 USB stick.  force=True
+    allows a plain folder (for tests, or to prepare files to copy by hand)."""
+    if not os.path.isdir(root):
+        raise SystemExit(f"{root} is not a folder (is the stick plugged in and mounted?)")
+    if force:
+        return
+    m = _mount_of(root)
+    if m is None:              # not Linux: nothing to check against yet
+        return
+    dev, mnt, fs = m
+    if os.path.realpath(root) != mnt:
+        raise SystemExit(f"{root} is not the top of a drive (that is {mnt}); "
+                         "use --force to write into a plain folder")
+    if fs not in ("vfat", "msdos"):
+        raise SystemExit(f"{mnt} is {fs}, the radio needs FAT32. Copy anything you need off it, "
+                         "then reformat it as FAT32 (sticks of 64 GB and up usually come as exFAT)")
+    if _removable(dev) is False:
+        raise SystemExit(f"{mnt} ({dev}) is not a removable drive; refusing to write to it")
+
+
+def _write_if_changed(path, data, dry_run):
+    """-> 'new', 'changed' or 'same'.  Writes to a temp name, then renames."""
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return "same"
+        state = "changed"
+    except FileNotFoundError:
+        state = "new"
+    if not dry_run:
+        tmp = path + ".p4tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    return state
+
+
+def write_stick(root, out_rows, settings=None, wifi=None, wifi_remove=False, logos=None,
+                project=(), dry_run=False, log=print):
+    """Writes the radio/ folder of a stick.
+
+    out_rows   stations in radio order (see pick_rows)
+    settings   {'timezone','eq','brightness'} for config.txt (None: leave config.txt)
+    wifi       (ssid, password) to write wifi.txt; None leaves it as it is
+    logos      {station number: jpeg bytes} from write_logos, None leaves logos as they are
+    project    local files copied to p4radio/ on the stick (library, config)
+    Returns {'stations': n, 'logos': n, 'changed': [...], 'notes': [...]}.
+    """
+    rdir = os.path.join(root, "radio")
+    if not dry_run:
+        os.makedirs(rdir, exist_ok=True)
+    changed, notes = [], []
+    for f in (os.listdir(rdir) if os.path.isdir(rdir) else []):
+        if f.endswith(".p4tmp") and not dry_run:      # left by an interrupted write
+            os.remove(os.path.join(rdir, f))
+
+    def put(name, data):
+        st = _write_if_changed(os.path.join(rdir, name), data, dry_run)
+        if st != "same":
+            changed.append(f"{name} ({st})")
+        return st
+
+    text, kept, snotes = stations_text(out_rows)
+    notes += snotes
+    if not kept:
+        raise SystemExit("no stations the radio can use")
+    put("stations.txt", text.encode("utf-8"))
+
+    if settings is not None:
+        ct = config_text(settings)
+        if ct:
+            put("config.txt", ct.encode("utf-8"))
+
+    wpath = os.path.join(rdir, "wifi.txt")
+    if wifi is not None:
+        put("wifi.txt", wifi_text(*wifi).encode("utf-8"))
+        notes.append("wifi.txt holds the WiFi password in plain text")
+    elif wifi_remove and os.path.exists(wpath):
+        if not dry_run:
+            os.remove(wpath)
+        changed.append("wifi.txt (removed)")
+
+    n_logos = None
+    if logos is not None:
+        # Logos follow station positions; rows left out by stations_text shift them.
+        pos = {id(r): n for n, r in enumerate(out_rows, 1)}
+        by_station = {}
+        for n, r in enumerate(kept, 1):
+            data = logos.get(pos[id(r)])
+            if data is not None:
+                by_station[n] = data
+        want = {f"{n}.jpg" for n in by_station}
+        existing = os.listdir(rdir) if os.path.isdir(rdir) else []
+        for f in existing:
+            # stale numbers, and 3.jpeg / 3.JPE next to a new 3.jpg (the radio
+            # would call that a second logo for station 3)
+            if fw_logo_number(f) and f not in want:
+                if not dry_run:
+                    os.remove(os.path.join(rdir, f))
+                changed.append(f"{f} (removed)")
+        for n in sorted(by_station):
+            put(f"{n}.jpg", by_station[n])
+        n_logos = len(by_station)
+        if not by_station:
+            notes.append("no logos on the stick: the radio keeps the logos it already has")
+
+    for f in (os.listdir(rdir) if os.path.isdir(rdir) else []):
+        if f.lower().endswith((".jpg", ".jpeg", ".jpe")) and not f.startswith(".") \
+                and not fw_logo_number(f):
+            notes.append(f"radio/{f} is not a station logo name; the radio will list it in report.txt")
+
+    if project:
+        pdir = os.path.join(root, "p4radio")
+        if not dry_run:
+            os.makedirs(pdir, exist_ok=True)
+        for src in project:
+            if os.path.exists(src):
+                with open(src, "rb") as f:
+                    _write_if_changed(os.path.join(pdir, os.path.basename(src)), f.read(), dry_run)
+
+    if not dry_run and hasattr(os, "sync"):
+        os.sync()
+    return {"stations": len(kept), "logos": n_logos, "changed": changed, "notes": notes}
+
+
+def eject(root):
+    """Unmounts and powers off the stick.  -> message for the user."""
+    m = _mount_of(root)
+    if m and shutil.which("udisksctl"):
+        dev = m[0]
+        r = subprocess.run(["udisksctl", "unmount", "-b", dev], capture_output=True, text=True)
+        if r.returncode != 0:
+            return f"could not unmount {dev}: {r.stderr.strip()}"
+        subprocess.run(["udisksctl", "power-off", "-b", dev], capture_output=True, text=True)
+        return "stick ejected, you can unplug it"
+    if sys.platform == "darwin" and shutil.which("diskutil"):
+        r = subprocess.run(["diskutil", "eject", root], capture_output=True, text=True)
+        return "stick ejected, you can unplug it" if r.returncode == 0 else r.stderr.strip()
+    return "eject the stick from your file manager before unplugging it"
+
+
+def cmd_stick(a):
+    rows = load_lib(a.library)
+    cfg = load_cfg(a.config)
+    check_stick(a.mount, a.force)
+
+    settings = dict(cfg.get("settings", {}))
+    if a.timezone:
+        try:
+            settings["timezone"] = tz_posix(a.timezone)
+        except ValueError as e:
+            raise SystemExit(str(e))
+    if a.eq:
+        settings["eq"] = a.eq
+    if a.brightness is not None:
+        settings["brightness"] = a.brightness
+    try:
+        config_text(settings)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    if settings != cfg.get("settings", {}) and not a.dry_run:
+        cfg["settings"] = settings
+        save_cfg(a.config, cfg)
+
+    wifi = None
+    if a.wifi:
+        pw = a.password
+        if pw is None:
+            import getpass
+            pw = getpass.getpass(f"password for {a.wifi!r} (empty for an open network): ")
+        wifi = (a.wifi, pw)
+        try:
+            wifi_text(*wifi)
+        except ValueError as e:
+            raise SystemExit(str(e))
+
+    out_rows = pick_rows(rows, a.include_untested, a.include_failed)
+    if not out_rows:
+        raise SystemExit("no stations to write (run `test` first, or --include-untested)")
+    logos = None if a.no_logos else write_logos(out_rows, a.size, a.bg)
+
+    res = write_stick(a.mount, out_rows, settings=settings, wifi=wifi, wifi_remove=a.no_wifi,
+                      logos=logos, project=(a.library, a.config), dry_run=a.dry_run)
+    what = "would write" if a.dry_run else "wrote"
+    print(f"{what} {res['stations']} stations" +
+          (f", {res['logos']} logos" if res["logos"] is not None else "") +
+          f" -> {os.path.join(a.mount, 'radio')}")
+    for c in res["changed"]:
+        print(f"  {c}")
+    if not res["changed"]:
+        print("  nothing changed: the stick already matches")
+    for n in res["notes"]:
+        print(f"  note: {n}")
+    if not a.dry_run:
+        print("Plug the stick into the radio: it imports the files and restarts once.\n"
+              "Afterwards `p4radio.py report <stick>` shows what the radio stored.")
+        if a.eject:
+            print(eject(a.mount))
+
+
+def cmd_report(a):
+    found = False
+    for name in ("report.txt", "update.txt"):
+        p = os.path.join(a.mount, "radio", name)
+        if os.path.exists(p):
+            found = True
+            when = dt.datetime.fromtimestamp(os.path.getmtime(p))
+            print(f"== radio/{name}  ({when:%Y-%m-%d %H:%M}) ==")
+            with open(p, encoding="utf-8", errors="replace") as f:
+                print(f.read().rstrip())
+            print()
+    if not found:
+        print("no report on this stick yet: the radio writes radio/report.txt when it imports the stick")
 
 
 # --------------------------------------------------------------------------
@@ -949,10 +1386,10 @@ def main():
     s.add_argument("which", nargs="?"); s.add_argument("--undecided", action="store_true")
     s.set_defaults(fn=cmd_listen)
 
-    s = sp.add_parser("build", help="write stations.txt (+ logos/N.jpeg) for the radio")
+    s = sp.add_parser("build", help="write stations.txt (+ N.jpg logos) into a folder")
     s.add_argument("--out", default="card")
     s.add_argument("--line", help="line template, e.g. '{name}|{url}' (default from config)")
-    s.add_argument("--logos", action="store_true", help="also make logos/N.jpeg (needs Pillow)")
+    s.add_argument("--logos", action="store_true", help="also make N.jpg logos (needs Pillow)")
     s.add_argument("--size", type=int, default=304, help="logo size, multiple of 16 (default 304)")
     s.add_argument("--bg", default="#000000", help="logo background colour")
     s.add_argument("--resolved", action="store_true", help="write final (post-redirect) URLs")
@@ -960,6 +1397,28 @@ def main():
     s.add_argument("--include-untested", action="store_true")
     s.add_argument("--include-failed", action="store_true")
     s.set_defaults(fn=cmd_build)
+
+    s = sp.add_parser("stick", help="write the radio/ folder on the radio's USB stick")
+    s.add_argument("mount", help="where the stick is mounted, e.g. /media/me/STICK")
+    s.add_argument("--wifi", metavar="SSID", help="write wifi.txt for this network (asks for the password)")
+    s.add_argument("--password", help="WiFi password (instead of being asked; empty = open network)")
+    s.add_argument("--no-wifi", action="store_true", help="remove wifi.txt from the stick")
+    s.add_argument("--timezone", help="Europe/London, local, or a POSIX TZ string (remembered)")
+    s.add_argument("--eq", choices=EQ_PRESETS, help="EQ preset (remembered)")
+    s.add_argument("--brightness", type=int, help="screen brightness 20-100 (remembered)")
+    s.add_argument("--no-logos", action="store_true", help="leave the logos on the stick alone")
+    s.add_argument("--size", type=int, default=304, help="logo size, multiple of 16 (default 304)")
+    s.add_argument("--bg", default="#000000", help="logo background colour")
+    s.add_argument("--include-untested", action="store_true")
+    s.add_argument("--include-failed", action="store_true")
+    s.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+    s.add_argument("--force", action="store_true", help="allow a plain folder instead of a stick")
+    s.add_argument("--eject", action="store_true", help="eject the stick when done")
+    s.set_defaults(fn=cmd_stick)
+
+    s = sp.add_parser("report", help="show the radio's report.txt / update.txt from a stick")
+    s.add_argument("mount")
+    s.set_defaults(fn=cmd_report)
 
     a = p.parse_args()
     if getattr(a, "size", 16) % 16:
