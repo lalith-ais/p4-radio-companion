@@ -133,6 +133,23 @@ class TestCleaning(unittest.TestCase):
         with self.assertRaises(ValueError):
             P.tz_posix("Nowhere/Atlantis")
 
+    def test_timezone_without_system_database(self):
+        """Windows (and a packaged app) has no zoneinfo files: the tzdata package is used."""
+        try:
+            import tzdata  # noqa: F401
+        except ImportError:
+            self.skipTest("needs the tzdata package")
+        import zoneinfo
+        real = zoneinfo.TZPATH
+        zoneinfo.reset_tzpath([])
+        try:
+            self.assertEqual(P.tz_posix("Europe/London"), "GMT0BST,M3.5.0/1,M10.5.0")
+            self.assertEqual(P.tz_posix("America/New_York"), "EST5EDT,M3.2.0,M11.1.0")
+            with self.assertRaises(ValueError):
+                P.tz_posix("Nowhere/Atlantis")
+        finally:
+            zoneinfo.reset_tzpath(real)
+
     def test_config(self):
         self.assertIsNone(P.config_text({}))
         t = P.config_text({"timezone": "CET-1CEST,M3.5.0,M10.5.0/3", "eq": "bass", "brightness": 80})

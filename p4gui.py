@@ -32,6 +32,8 @@ import p4radio as P
 
 HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 PAGE = os.path.join(HERE, "gui", "index.html")
+APP_PORT = 47860            # the app's usual port: a second start finds the first one there
+FROZEN = getattr(sys, "frozen", False)      # the packaged app (PyInstaller)
 LOGO_SIZE = 304
 UPLOAD_MAX = 8 * 1024 * 1024
 
@@ -204,6 +206,11 @@ def browse(path=""):
     for name in ("Music", "Desktop", "Downloads", "Documents"):
         if os.path.isdir(os.path.join(home, name)):
             places.append({"name": name, "path": os.path.join(home, name)})
+    if sys.platform == "win32":                  # other drives (D:, E: ...)
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+        places += [{"name": f"{chr(65 + i)}:", "path": f"{chr(65 + i)}:\\"}
+                   for i in range(26) if mask & (1 << i)]
     parent = os.path.dirname(path)
     return {"path": path, "parent": parent if parent != path else "", "dirs": dirs, "mp3": mp3,
             "places": places}
@@ -482,7 +489,7 @@ def fetch_picture(url):
         raise ValueError("the picture's address must start with http:// or https://")
     req = urllib.request.Request(url, headers={"User-Agent": P.UA})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15, context=P.tls_context()) as r:
             data = r.read(UPLOAD_MAX + 1)
     except Exception as e:
         raise ValueError(f"could not download the picture ({e})")
@@ -947,11 +954,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {"message": P.eject(mount)}
 
 
-def serve(project_dir, port=0, open_browser=True, allow_folder=False, ready=None):
+def make_server(project_dir, port=0, allow_folder=False):
     app = App(Project(project_dir), allow_folder)
     handler = type("H", (Handler,), {"app": app})
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
     app.port = httpd.server_address[1]
+    return app, httpd
+
+
+def already_running(port=APP_PORT):
+    """True if this program is already serving its page on port."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as r:
+            return b"<title>P4 Radio Setup</title>" in r.read(4096)
+    except Exception:
+        return False
+
+
+def control_window(app, httpd, url):
+    """A small window for the packaged app (no console): open the page again, or quit."""
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.title("P4 Radio Setup")
+    root.resizable(False, False)
+    frm = tk.Frame(root, padx=22, pady=18)
+    frm.pack()
+    tk.Label(frm, text="P4 Radio Setup is running", font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+    tk.Label(frm, justify="left", text="The setup page is open in your web browser.\n"
+             "Keep this window open while you use it.").pack(anchor="w", pady=(6, 14))
+    row = tk.Frame(frm)
+    row.pack(fill="x")
+
+    def quit_():
+        busy = app.music_job.state == "running" or app.job.state == "running"
+        if busy and not messagebox.askyesno("P4 Radio Setup", "The stick is still being written.\n"
+                                            "Quit anyway? The copy stops part-way."):
+            return
+        root.destroy()
+    tk.Button(row, text="Open the page", command=lambda: webbrowser.open(url)).pack(side="left")
+    tk.Button(row, text="Quit", command=quit_).pack(side="right")
+    tk.Label(frm, text=f"Your station list is kept in {app.project.dir}", fg="gray", wraplength=340,
+             justify="left").pack(anchor="w", pady=(14, 0))
+    root.protocol("WM_DELETE_WINDOW", quit_)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    root.mainloop()
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def serve(project_dir, port=0, open_browser=True, allow_folder=False, ready=None):
+    app, httpd = make_server(project_dir, port, allow_folder)
     url = f"http://127.0.0.1:{app.port}/"
     if ready:
         ready(app, httpd)
@@ -972,14 +1025,48 @@ def main(argv=None):
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--project", default=os.path.join("~", "P4Radio"),
                    help="folder for the station list and logos (default ~/P4Radio)")
-    p.add_argument("--port", type=int, default=0, help="port on 127.0.0.1 (default: any free one)")
+    p.add_argument("--port", type=int, help=f"port on 127.0.0.1 (default {APP_PORT}, or any free one;"
+                   " with the default a second start opens the first one's page)")
     p.add_argument("--no-browser", action="store_true", help="don't open the browser")
+    p.add_argument("--window", action="store_true", help="show the small control window (the app does)")
+    p.add_argument("--console", action="store_true", help="no control window, even in the app")
     a = p.parse_args(argv)
     try:
         import PIL  # noqa: F401
     except ImportError:
         raise SystemExit("Pillow is needed for the logos:  pip install pillow")
-    serve(a.project, a.port, not a.no_browser)
+    port = a.port
+    if port is None:
+        if already_running(APP_PORT):            # opened twice: show the running one's page
+            print(f"already running: http://127.0.0.1:{APP_PORT}/", flush=True)
+            if not a.no_browser:
+                webbrowser.open(f"http://127.0.0.1:{APP_PORT}/")
+            return
+        port = APP_PORT
+    try:
+        app, httpd = make_server(a.project, port)
+    except OSError:                              # port taken by something else
+        app, httpd = make_server(a.project, 0)
+    url = f"http://127.0.0.1:{app.port}/"
+    window = (FROZEN or a.window) and not a.console
+    if window:
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            window = False
+    if not a.no_browser:
+        threading.Timer(0.5, webbrowser.open, (url,)).start()
+    if window:
+        control_window(app, httpd, url)
+        return
+    print(f"P4 Radio configurator: {url}  (project {app.project.dir})", flush=True)
+    print("Keep this window open while you use the page; press Ctrl+C here to stop.", flush=True)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print()
+    finally:
+        httpd.server_close()
 
 
 if __name__ == "__main__":

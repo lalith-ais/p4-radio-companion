@@ -1,0 +1,50 @@
+# Builds "P4 Radio Setup" for Windows, macOS (Apple silicon) and Linux.
+# PyInstaller only builds for the system it runs on, so each is built on its own.
+# Run it from the Actions tab ("Run workflow"), or push a tag such as v1.0.
+# The programs are attached to the run as artifacts.
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install -r packaging/requirements.txt
+
+      # Tests that need Linux, the firmware source or gcc skip themselves.
+      # A failure here is shown but still lets the build run, so the program
+      # can be tried on that system.
+      - name: Tests
+        continue-on-error: true
+        run: |
+          python tests/test_stick.py
+          python tests/test_music.py
+          python tests/test_probe.py
+          python tests/test_gui.py
+
+      - name: Build
+        run: python packaging/build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: P4-Radio-Setup-${{ runner.os }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/p4-radio-setup
+          if-no-files-found: error

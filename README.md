@@ -1,9 +1,36 @@
-# p4radio – Linux companion for the ESP32-P4 internet radio
+# P4 Radio Setup – configurator for the ESP32-P4 internet radio
 
-One Python file, standard library only (Pillow only for logos). It keeps a master
-station library (`library.csv`, editable in LibreOffice), probes every stream the
-way the radio will, lets you audition stations in mpv, and builds the
-`stations.txt` + `N.jpg` logos that go to the radio, straight onto its USB stick.
+Prepares the radio's USB stick: find, listen to and test stations, arrange them
+with their logos, set WiFi, time zone, EQ and brightness, and copy music. Plug
+the stick into the radio and it sets itself up.
+
+Two ways to use it: **P4 Radio Setup**, a page in your web browser (a packaged
+program for Windows, macOS and Linux, or `python3 p4gui.py`), and `p4radio.py`,
+the same on the command line. Standard library plus Pillow. The station
+library is `library.csv`, editable in LibreOffice.
+
+## Download and run (no Python needed)
+
+**P4 Radio Setup** is the same configurator packaged as one program:
+
+| System | File | First start |
+|---|---|---|
+| Windows 10/11 | `P4 Radio Setup.exe` | Windows may say "Windows protected your PC": click **More info**, then **Run anyway** (the program isn't signed). |
+| macOS (Apple silicon) | `P4-Radio-Setup-macOS.zip`: unzip, move `P4 Radio Setup.app` to Applications | macOS says it can't check the developer: open **System Settings → Privacy & Security** and click **Open Anyway** (or right-click the app, **Open**). |
+| Linux (x86-64) | `p4-radio-setup` | `chmod +x p4-radio-setup`, then run it. |
+
+It opens the setup page in your web browser and shows a small window: keep it
+open while you use the page, and click **Quit** when you are done. Starting it
+again while it runs just opens the page again. Your station list is kept in
+`P4Radio` in your home folder.
+
+To build these: `pip install -r packaging/requirements.txt`, then
+`python packaging/build.py` on each system. PyInstaller only builds for the
+system it runs on, so `.github/workflows/build.yml` builds all three on GitHub
+(Actions tab, **Run workflow**, or push a tag like `v1.0`). Intel Macs are not
+built yet.
+
+## From the source
 
 ```bash
 python3 -m venv ~/.venvs/p4radio && . ~/.venvs/p4radio/bin/activate

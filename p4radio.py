@@ -39,6 +39,15 @@ import time
 import urllib.parse
 import urllib.request
 
+# A packaged app (PyInstaller, Linux) runs with LD_LIBRARY_PATH pointing at its
+# own libraries; programs it starts (lsblk, udisksctl, nmcli) would load those
+# and fail.  Its own libraries are loaded by now, so give the original back.
+if getattr(sys, "frozen", False) and sys.platform.startswith("linux"):
+    if "LD_LIBRARY_PATH_ORIG" in os.environ:
+        os.environ["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH_ORIG"]
+    else:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+
 VERSION = "0.1"
 UA = f"p4radio-companion/{VERSION}"
 LIB_DEFAULT = "library.csv"
@@ -73,6 +82,26 @@ def fw_logo_number(name):
     m = re.fullmatch(r"(\d{1,4})\.(jpg|jpeg|jpe)", name, re.I)
     n = int(m.group(1)) if m else 0
     return n if 1 <= n <= FW_STATIONS_MAX else 0
+
+
+def tls_context():
+    """Certificate checking as the radio does it.  A packaged app (PyInstaller)
+    can't see the system's certificate store on macOS, so it uses the bundled
+    certifi list; otherwise the system store."""
+    global _TLS
+    if _TLS is None:
+        cafile = None
+        if getattr(sys, "frozen", False):
+            try:
+                import certifi
+                cafile = certifi.where()
+            except ImportError:
+                pass
+        _TLS = ssl.create_default_context(cafile=cafile)
+    return _TLS
+
+
+_TLS = None
 
 
 # --------------------------------------------------------------------------
@@ -173,7 +202,7 @@ def _connect(url, timeout, icy=True):
     except OSError as e:
         raise ProbeError(f"connect: {e}")
     if u.scheme == "https":
-        ctx = ssl.create_default_context()
+        ctx = tls_context()
         try:
             sock = ctx.wrap_socket(sock, server_hostname=host)
         except ssl.SSLCertVerificationError as e:
@@ -706,7 +735,7 @@ def rb_get(path, params=None):
         try:
             req = urllib.request.Request(f"https://{host}/json/{path}" + (f"?{q}" if q else ""),
                                          headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=30, context=tls_context()) as r:
                 return json.load(r)
         except Exception as e:
             last = e
@@ -923,7 +952,7 @@ def render_logo(src, size, bg):
         raise SystemExit("Pillow needed for logos:  pip install pillow")
     if re.match(r"https?://", src, re.I):
         req = urllib.request.Request(src, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10, context=tls_context()) as r:
             data = r.read(4 * 1024 * 1024)
     else:
         with open(os.path.expanduser(src), "rb") as f:
@@ -1127,12 +1156,25 @@ def tz_posix(value):
         except ImportError:
             dirs = ["/usr/share/zoneinfo"]
         paths = [os.path.join(d, value) for d in dirs]
-    for p in paths:
-        try:
-            with open(p, "rb") as f:
-                data = f.read()
-        except OSError:
-            continue
+    def tz_files():
+        for p in paths:
+            try:
+                with open(p, "rb") as f:
+                    yield f.read()
+            except OSError:
+                pass
+        if value != "local":                    # no system database (Windows): the tzdata package
+            try:
+                import importlib.resources
+                parts = value.split("/")
+                res = importlib.resources.files("tzdata.zoneinfo")
+                for part in parts:
+                    res = res.joinpath(part)
+                yield res.read_bytes()
+            except Exception:
+                pass
+
+    for data in tz_files():
         # TZif v2+ ends with "\n<POSIX TZ>\n"
         if data[:4] == b"TZif" and data[4:5] >= b"2":
             footer = data.rstrip(b"\n").rsplit(b"\n", 1)[-1].decode("ascii", "replace")
@@ -1852,6 +1894,15 @@ def eject(root):
     if sys.platform == "darwin" and shutil.which("diskutil"):
         r = subprocess.run(["diskutil", "eject", root], capture_output=True, text=True)
         return "stick ejected, you can unplug it" if r.returncode == 0 else r.stderr.strip()
+    if sys.platform == "win32":                 # Explorer's own "Eject" (not yet tried on Windows)
+        drive = os.path.splitdrive(os.path.abspath(root))[0]
+        if re.fullmatch(r"[A-Za-z]:", drive):
+            cmd = ("(New-Object -ComObject Shell.Application).Namespace(17)"
+                   f".ParseName('{drive}').InvokeVerb('Eject')")
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True,
+                               text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode == 0:
+                return "Windows was asked to eject the stick: unplug it when Windows says it is safe"
     return "eject the stick from your file manager before unplugging it"
 
 

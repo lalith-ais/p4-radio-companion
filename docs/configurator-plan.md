@@ -137,4 +137,11 @@ and show what the radio stored and anything it rejected, in plain words.
       the real stick (FAT32 renames, 2 s file times, picture conversion) with a
       test folder, removed afterwards. Tested on the radio 2026-11-15: copied
       music plays
-- [ ] 6 packaging
+- [~] 6 Packaging: `packaging/build.py` (PyInstaller, icon drawn in the script,
+      tzdata + certifi bundled), `.github/workflows/build.yml` (Windows, macOS
+      arm64, Linux). App mode: small Tk window (Open the page / Quit), fixed
+      port 47860 so a second start reopens the running one. Linux build tested
+      here (stick, WiFi list, https search/preview, time zones, logos, check,
+      window under Xvfb); fixed on the way: LD_LIBRARY_PATH made lsblk fail in
+      the packaged app. Windows/macOS: built and tested on GitHub, then by hand
+      on real machines (stick detection, eject and WiFi list there are untested)
