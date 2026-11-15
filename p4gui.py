@@ -21,6 +21,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import socketserver
 import subprocess
 import sys
 import threading
@@ -954,10 +955,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {"message": P.eject(mount)}
 
 
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind() looks up this computer's network name
+        # (socket.getfqdn), which can hang for many seconds on some Macs before
+        # the port accepts anything.  The name is never used here.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def make_server(project_dir, port=0, allow_folder=False):
     app = App(Project(project_dir), allow_folder)
     handler = type("H", (Handler,), {"app": app})
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+    httpd = Server(("127.0.0.1", port), handler)
     app.port = httpd.server_address[1]
     return app, httpd
 

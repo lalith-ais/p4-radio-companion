@@ -395,6 +395,17 @@ class TestGui(unittest.TestCase):
         self.assertEqual({x["ssid"]: x["band"] for x in n["networks"]},
                          {"oki2g4": "2.4", "guest": "5", "AX6000": "5", "Both": "both", "a:b": "2.4"})
 
+    def test_server_start_does_not_look_up_host_name(self):
+        """getfqdn() can hang for seconds on some Macs; the page server must not wait on it."""
+        import socket
+        real = socket.getfqdn
+        socket.getfqdn = lambda *a: (_ for _ in ()).throw(AssertionError("getfqdn called"))
+        try:
+            app, httpd = G.make_server(os.path.join(self.tmp, "p2"))
+            httpd.server_close()
+        finally:
+            socket.getfqdn = real
+
     def test_list_sticks_does_not_crash(self):
         for s in G.list_sticks():
             self.assertIn("usable", s)

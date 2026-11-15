@@ -116,6 +116,10 @@ class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_bind(self):                       # skip the getfqdn() lookup (slow on some Macs)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 if __name__ == "__main__":
     S(("127.0.0.1", PORT), H).serve_forever()

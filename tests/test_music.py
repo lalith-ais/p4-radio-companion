@@ -125,7 +125,9 @@ class TestPlanAndCopy(unittest.TestCase):
         self.put("Abba/Gold/cover.jpg", jpeg())                          # fine: copied as is
         self.put("Abba/Live/folder.png", png())                          # becomes folder.jpg
         self.put("Abba/Live/front.jpg", jpeg(progressive=True))          # converted
-        self.put("Abba/Live/AC:DC?.mp3", song())                         # renamed
+        odd = os.name != "nt"                    # Windows can't even hold the name below
+        if odd:
+            self.put("Abba/Live/AC:DC?.mp3", song())                     # renamed
         self.put("Abba/Live/notes.txt", b"x")                            # ignored
         self.put("Abba/Live/hidden/.secret.mp3", song())                 # hidden: ignored
         self.put("Other/a.flac", b"f")
@@ -141,7 +143,8 @@ class TestPlanAndCopy(unittest.TestCase):
         self.assertEqual(by["Albums/Abba/Gold/cover.jpg"]["action"], "copy")
         self.assertEqual(by["Albums/Abba/Live/folder.jpg"]["action"], "cover")
         self.assertEqual(by["Albums/Abba/Live/front.jpg"]["action"], "cover")
-        self.assertIn("Albums/Abba/Live/AC_DC_.mp3", by)
+        if odd:
+            self.assertIn("Albums/Abba/Live/AC_DC_.mp3", by)
         self.assertEqual(plan["left_out"], {".flac": 2, ".m4a": 1})
         self.assertEqual([w for _, w in plan["skipped"]], ["more than 8 folders deep"])
         longrel = [r for r in by if r.startswith("Albums/Long/")][0]
@@ -150,7 +153,7 @@ class TestPlanAndCopy(unittest.TestCase):
         self.assertTrue(plan["fits"])
 
         res = P.music_copy(plan, self.stick)
-        self.assertEqual((res["copied"], res["covers"], res["art_problems"]), (7, 2, 1))   # 4 songs + 3 pictures
+        self.assertEqual((res["copied"], res["covers"], res["art_problems"]), (6 + odd, 2, 1))   # songs + 3 pictures
         files = self.stick_files()
         self.assertNotIn("notes.txt", " ".join(files))
         self.assertFalse(any(f.endswith(".p4tmp") for f in files))
@@ -168,7 +171,7 @@ class TestPlanAndCopy(unittest.TestCase):
                          ["Albums/Abba/Gold/01 Dancing Queen.mp3"])
 
         have = P.music_summary(self.stick)
-        self.assertEqual((have["songs"], [f["name"] for f in have["folders"]]), (4, ["Albums"]))
+        self.assertEqual((have["songs"], [f["name"] for f in have["folders"]]), (3 + odd, ["Albums"]))
         with self.assertRaises(ValueError):
             P.music_remove(self.stick, "../stick")
         P.music_remove(self.stick, "Albums")
