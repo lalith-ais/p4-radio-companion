@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P4 Radio Setup</title>
+<style>
+:root {
+  --bg: #f4f2ee; --panel: #ffffff; --ink: #1d1f22; --muted: #6a6f76; --line: #e2ded7;
+  --accent: #1f6feb; --accent-ink: #ffffff; --soft: #eef3fd;
+  --ok: #1a7f37; --ok-bg: #e6f4ea; --warn: #9a6700; --warn-bg: #fff4d6;
+  --bad: #c62828; --bad-bg: #fdecec; --off: #a4a8ae;
+  --radius: 10px; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --panel: #1e2125; --ink: #e8e9eb; --muted: #9aa0a8; --line: #2e3238;
+    --accent: #4c8dff; --accent-ink: #0b0d10; --soft: #1c2738;
+    --ok: #56c271; --ok-bg: #173022; --warn: #e0b341; --warn-bg: #33290f;
+    --bad: #ff6b6b; --bad-bg: #3a1a1a; --off: #5d636b;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+         background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+header .saved { margin-left: auto; color: var(--muted); font-size: 13px; }
+nav { display: flex; gap: 4px; }
+nav button { white-space: nowrap; border: 0; background: none; color: var(--muted); font: inherit; padding: 7px 14px;
+             border-radius: 999px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+nav button .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+                border: 1.5px solid currentColor; font-size: 12px; font-weight: 600; }
+nav button.on { background: var(--soft); color: var(--accent); font-weight: 600; }
+main { max-width: 980px; margin: 0 auto; padding: 24px 16px 80px; }
+section { display: none; }
+section.on { display: block; }
+h2 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+.lead { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 12px; }
+button.btn { font: inherit; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+             border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+button.btn:hover { border-color: var(--muted); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.btn.danger { color: var(--bad); }
+button.btn:disabled { opacity: .5; cursor: default; }
+button.link { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.msg { padding: 10px 14px; border-radius: 8px; margin: 10px 0; }
+.msg.bad { background: var(--bad-bg); color: var(--bad); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+.msg.ok { background: var(--ok-bg); color: var(--ok); }
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+
+/* sticks */
+.stick { display: flex; gap: 16px; align-items: flex-start; cursor: pointer; }
+.stick.sel { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: -1px; }
+.stick.bad { cursor: default; }
+.stick .icon { width: 40px; height: 40px; border-radius: 8px; background: var(--soft); color: var(--accent);
+               display: grid; place-items: center; flex: none; }
+.stick h3 { margin: 0; font-size: 16px; }
+details.report { margin-top: 10px; }
+details.report pre { white-space: pre-wrap; font-size: 12.5px; background: var(--bg); padding: 10px;
+                     border-radius: 8px; margin: 8px 0 0; }
+
+/* stations */
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.count { font-variant-numeric: tabular-nums; }
+.list { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        box-shadow: var(--shadow); overflow: hidden; }
+.st { display: grid; grid-template-columns: 22px 34px 56px 1fr auto auto; gap: 12px; align-items: center;
+      padding: 8px 14px 8px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.st:last-child { border-bottom: 0; }
+.st.off { opacity: .55; }
+.st.drag { opacity: .3; }
+.st.over-top { box-shadow: inset 0 3px 0 var(--accent); }
+.st.over-bot { box-shadow: inset 0 -3px 0 var(--accent); }
+.handle { cursor: grab; color: var(--off); text-align: center; user-select: none; font-size: 18px; line-height: 1; }
+.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+.thumb { width: 56px; height: 56px; border-radius: 8px; background: var(--bg); overflow: hidden;
+         display: grid; place-items: center; font-weight: 700; color: var(--muted); font-size: 18px;
+         border: 1px solid var(--line); cursor: pointer; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.dropping { outline: 2px dashed var(--accent); }
+.st .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st .name.unnamed { font-weight: 400; font-style: italic; color: var(--muted); }
+.st .url { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.badge.OK { background: var(--ok-bg); color: var(--ok); }
+.badge.WARN { background: var(--warn-bg); color: var(--warn); }
+.badge.FAIL { background: var(--bad-bg); color: var(--bad); }
+.badge.none { color: var(--muted); border: 1px solid var(--line); }
+.acts { display: flex; gap: 6px; align-items: center; }
+.icon-btn { border: 1px solid transparent; background: none; color: var(--muted); border-radius: 6px;
+            width: 30px; height: 30px; cursor: pointer; font-size: 15px; }
+.icon-btn:hover { border-color: var(--line); color: var(--ink); }
+.switch { position: relative; width: 38px; height: 22px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--off); cursor: pointer; transition: .15s; }
+.switch span::after { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px;
+                      border-radius: 50%; background: #fff; transition: .15s; }
+.switch input:checked + span { background: var(--ok); }
+.switch input:checked + span::after { transform: translateX(16px); }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* dialog */
+dialog { border: 1px solid var(--line); border-radius: 14px; padding: 0; background: var(--panel);
+         color: var(--ink); width: min(560px, calc(100vw - 32px)); box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog form { padding: 20px 22px; }
+dialog h3 { margin: 0 0 16px; font-size: 18px; }
+label.f { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+input.t { width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--ink); }
+input.t:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.hint { font-size: 12.5px; color: var(--muted); margin-top: 4px; min-height: 1.2em; }
+.hint.warn { color: var(--warn); } .hint.bad { color: var(--bad); }
+.logo-edit { display: flex; gap: 16px; align-items: flex-start; margin-top: 6px; }
+.logo-big { width: 152px; height: 152px; border-radius: 10px; background: var(--bg); border: 1px dashed var(--line);
+            display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 13px;
+            overflow: hidden; flex: none; padding: 8px; }
+.logo-big.has { padding: 0; border-style: solid; }
+.logo-big img { width: 100%; height: 100%; display: block; }
+.logo-big.dropping { border-color: var(--accent); background: var(--soft); }
+.dlg-foot { display: flex; gap: 10px; margin-top: 22px; align-items: center; }
+
+/* write */
+.summary { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; }
+.log { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
+       border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; margin-top: 12px; }
+.steps-after { margin: 8px 0 0; padding-left: 20px; }
+.spinner { width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--accent);
+           border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 640px) {
+  header { padding: 12px 16px; }
+  .st { grid-template-columns: 18px 26px 44px 1fr auto; gap: 8px; }
+  .st .badge { display: none; }
+  .thumb { width: 44px; height: 44px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>P4 Radio Setup</h1>
+  <nav>
+    <button data-go="stick"><span class="n">1</span>USB stick</button>
+    <button data-go="stations"><span class="n">2</span>Stations</button>
+    <button data-go="write"><span class="n">3</span>Write</button>
+  </nav>
+  <span class="saved" id="saved"></span>
+</header>
+
+<main>
+  <section id="stick">
+    <h2>Choose the radio's USB stick</h2>
+    <p class="lead">Plug the stick into this computer. It appears below within a few seconds.</p>
+    <div id="sticks"></div>
+  </section>
+
+  <section id="stations">
+    <h2>Stations</h2>
+    <p class="lead">The order here is the order on the radio. Drag a station to move it, and switch off
+      any you don't want on the radio. Click a picture to change the logo.</p>
+    <div class="toolbar">
+      <button class="btn primary" id="add">+ Add a station</button>
+      <span class="grow"></span>
+      <span class="count muted" id="count"></span>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <section id="write">
+    <h2>Write to the stick</h2>
+    <p class="lead">Check what will change, then write. Only files that are different are written.</p>
+    <div id="writebox"></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="dform">
+    <h3 id="dtitle">Station</h3>
+    <label class="f" for="dname">Name shown on the radio</label>
+    <input class="t" id="dname" autocomplete="off" placeholder="Leave empty to use the name the station sends">
+    <div class="hint" id="dname-hint"></div>
+    <label class="f" for="durl">Stream address</label>
+    <input class="t" id="durl" autocomplete="off" placeholder="https://…" spellcheck="false">
+    <div class="hint" id="durl-hint"></div>
+    <div id="dlogo-part">
+      <label class="f">Logo</label>
+      <div class="logo-edit">
+        <div class="logo-big" id="dlogo">Drop a picture here</div>
+        <div class="grow">
+          <button type="button" class="btn" id="dpick">Choose a picture…</button>
+          <input type="file" id="dfile" accept="image/*" hidden>
+          <label class="f" for="dlogourl">or a picture's web address</label>
+          <div class="row">
+            <input class="t grow" id="dlogourl" placeholder="https://…/logo.png" spellcheck="false">
+            <button type="button" class="btn" id="dlogogo">Use</button>
+          </div>
+          <div class="hint" id="dlogo-hint"></div>
+          <button type="button" class="link small" id="dlogoclear">Remove the logo</button>
+        </div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="btn danger" id="dremove">Remove station</button>
+      <span class="grow"></span>
+      <button type="button" class="btn" id="dcancel">Cancel</button>
+      <button type="submit" class="btn primary" id="dsave">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<input type="file" id="rowfile" accept="image/*" hidden>
+
+<script>
+"use strict";
+const TOKEN = "__TOKEN__";
+const S = { rows: [], limits: {}, settings: {}, sticks: [], stick: null, page: "stick", job: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const bytes = (s) => new TextEncoder().encode(s).length;
+
+async function api(path, body, raw) {
+  const opt = { method: body === undefined ? "GET" : "POST", headers: { "X-Token": TOKEN } };
+  if (raw) { opt.body = body; opt.headers["Content-Type"] = "application/octet-stream"; }
+  else if (body !== undefined) { opt.body = JSON.stringify(body); opt.headers["Content-Type"] = "application/json"; }
+  const r = await fetch("/api/" + path, opt);
+  const j = await r.json().catch(() => ({ error: "no answer from the program (is it still running?)" }));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function take(state) {
+  if (state && state.rows) { S.rows = state.rows; S.limits = state.limits; S.settings = state.settings; S.project = state.project; }
+}
+function saved(text) {
+  $("saved").textContent = text || "Saved on this computer";
+}
+function host(u) { try { return new URL(u).host; } catch { return u; } }
+/* A label for a station with no name, from its address:
+   ".../RadioXClassicRockMP3" -> "RadioXClassicRock", ".../80er-kulthits/stream/mp3" -> "80er-kulthits" */
+function guess(u) {
+  const GENERIC = /^(stream|streams|live|listen|radio|mp3|aac|aacp|high|low|hq|hqlivestream|icecast|proxy|hls|\d+)$/i;
+  let p = [];
+  try { p = new URL(u).pathname.split("/").filter(Boolean); } catch { return u; }
+  for (let i = p.length - 1; i >= 0; i--) {
+    const seg = decodeURIComponent(p[i]).replace(/\.(mp3|aac|m3u8?|pls|ogg)$/i, "").replace(/(MP3|AAC)$/, "");
+    if (seg && !GENERIC.test(seg) && /[a-z]/i.test(seg) && seg.length < 40) return seg;
+  }
+  return host(u).replace(/^(www|stream|streams|icecast|media(-\w+)?)\./, "");
+}
+function initials(r) {
+  const n = (r.name || r.icy_name || host(r.url)).replace(/^www\./, "");
+  return n.split(/[\s.\-_]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
+}
+
+/* ---------- pages ---------- */
+function go(page) {
+  S.page = page;
+  if (location.hash !== "#" + page) history.replaceState(null, "", "#" + page);
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === page));
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.go === page));
+  if (page === "write") renderWrite();
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.go));
+
+/* ---------- 1. stick ---------- */
+async function pollSticks() {
+  try {
+    const j = await api("sticks");
+    const key = JSON.stringify(j.sticks);
+    if (key !== S.sticksKey) {
+      S.sticksKey = key; S.sticks = j.sticks;
+      if (S.stick && !S.sticks.some((s) => s.usable && s.mount === S.stick.mount)) S.stick = null;
+      if (S.stick) S.stick = S.sticks.find((s) => s.mount === S.stick.mount);
+      const usable = S.sticks.filter((s) => s.usable);
+      if (!S.stick && usable.length === 1) S.stick = usable[0];
+      renderSticks();
+      if (S.page === "write") renderWrite();
+    }
+  } catch (e) { /* program gone: the next poll says so */ }
+}
+function stickSummary(s) {
+  const r = s.radio;
+  if (!r || (!r.stations && !r.logos)) return "No radio files on it yet.";
+  const bits = [`${r.stations} station${r.stations === 1 ? "" : "s"}`, `${r.logos} logo${r.logos === 1 ? "" : "s"}`];
+  if (r.wifi_ssid) bits.push(`WiFi “${esc(r.wifi_ssid)}”`);
+  return "Radio files on it: " + bits.join(", ");
+}
+function reportBlock(text) {
+  if (!text) return "";
+  const result = (text.match(/^Result:\s*(.*)$/m) || [])[1] || "";
+  const when = (text.match(/^Time:\s*(.*)$/m) || [])[1] || "";
+  return `<details class="report"><summary>What the radio said last time${when ? " (" + esc(when) + ")" : ""}: <b>${esc(result)}</b></summary><pre>${esc(text)}</pre></details>`;
+}
+function renderSticks() {
+  const box = $("sticks");
+  if (!S.sticks.length) {
+    box.innerHTML = `<div class="card empty">No USB stick found. Plug one in…<br><br><span class="spinner"></span></div>`;
+    return;
+  }
+  box.innerHTML = S.sticks.map((s, i) => {
+    const sel = S.stick && S.stick.mount === s.mount && s.usable;
+    let body = "";
+    if (s.problem === "not_mounted") {
+      body = `<div class="row" style="margin-top:8px"><span class="muted">This stick is not open yet.</span>
+              <button class="btn" data-mount="${esc(s.dev)}">Open it</button></div>`;
+    } else if (s.problem) {
+      body = `<div class="msg bad">${esc(s.problem)}</div>`;
+    } else {
+      body = `<div class="muted small">${s.size_text}, ${s.free_text} free</div>
+              <div style="margin-top:6px">${stickSummary(s)}</div>`;
+      if (sel && s.radio && s.radio.stations) {
+        const mine = S.rows.length;
+        body += `<div class="row" style="margin-top:10px">` + (mine
+          ? `<button class="btn" data-load="1">Replace my ${mine} stations with the ${s.radio.stations} on this stick</button>`
+          : `<button class="btn primary" data-load="1">Load the ${s.radio.stations} stations from this stick</button>`) + `</div>`;
+      }
+      if (sel) body += reportBlock(s.radio && s.radio.report);
+    }
+    return `<div class="card stick ${sel ? "sel" : ""} ${s.usable ? "" : "bad"}" data-i="${i}">
+      <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="2" width="10" height="7" rx="1"/><rect x="5" y="9" width="14" height="13" rx="2"/><path d="M10 5h1M13 5h1"/></svg></div>
+      <div class="grow"><h3>${esc(s.name)}${sel ? ` <span class="badge OK">chosen</span>` : ""}</h3>${body}</div></div>`;
+  }).join("") + (S.stick ? `<div class="row"><span class="grow"></span><button class="btn ${S.rows.length ? "primary" : ""}" id="next1">Next: stations →</button></div>` : "");
+  box.querySelectorAll(".stick").forEach((el) => el.onclick = (ev) => {
+    const s = S.sticks[+el.dataset.i];
+    if (ev.target.closest("button,details")) return;
+    if (s.usable) { S.stick = s; renderSticks(); }
+  });
+  box.querySelectorAll("[data-mount]").forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = "Opening…";
+    try { const j = await api("sticks/mount", { dev: b.dataset.mount }); S.sticksKey = ""; await pollSticks(); }
+    catch (e) { alert(e.message); b.disabled = false; b.textContent = "Open it"; }
+  });
+  box.querySelectorAll("[data-load]").forEach((b) => b.onclick = async () => {
+    if (S.rows.length && !confirm(`Replace the ${S.rows.length} stations on this computer with the ones on the stick?`)) return;
+    b.disabled = true; b.textContent = "Loading…";
+    try { take(await api("stick/load", { mount: S.stick.mount })); saved(); renderList(); renderSticks(); go("stations"); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+  const n = $("next1"); if (n) n.onclick = () => go("stations");
+}
+
+/* ---------- 2. stations ---------- */
+function renderList() {
+  const on = S.rows.filter((r) => r.on).length, max = S.limits.stations || 255;
+  $("count").innerHTML = `<b>${on}</b> of ${S.rows.length} on the radio` + (on > max ? ` — <span style="color:var(--bad)">the radio holds ${max}</span>` : "");
+  const box = $("list");
+  if (!S.rows.length) {
+    box.innerHTML = `<div class="card empty">No stations yet.<br>Load them from a stick on the first page, or add one with <b>+ Add a station</b>.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="list">` + S.rows.map((r, i) => {
+    const nm = r.name ? esc(r.name) : `<span title="No name set: the radio shows the name the station sends">${esc(r.icy_name || guess(r.url))}</span>`;
+    const st = r.status ? `<span class="badge ${r.status}" title="${esc(r.notes)}">${r.status === "OK" ? "Works" : r.status === "WARN" ? "Works, see note" : "Not working"}${r.codec ? " · " + esc(r.codec) : ""}</span>`
+                        : `<span class="badge none">Not tested</span>`;
+    return `<div class="st ${r.on ? "" : "off"}" draggable="true" data-i="${i}">
+      <div class="handle" title="Drag to move">⋮⋮</div>
+      <div class="num">${r.on ? r.number : ""}</div>
+      <div class="thumb" data-logo="${i}" title="Click or drop a picture to change the logo">${r.logo ? `<img src="/logo/${r.id}?v=${r.logo_v}" alt="">` : esc(initials(r))}</div>
+      <div style="min-width:0"><div class="name ${r.name ? "" : "unnamed"}">${nm}</div><div class="url">${esc(r.url)}</div></div>
+      ${st}
+      <div class="acts">
+        <label class="switch" title="On the radio"><input type="checkbox" data-on="${i}" ${r.on ? "checked" : ""}><span></span></label>
+        <button class="icon-btn" data-edit="${i}" title="Edit">✎</button>
+      </div></div>`;
+  }).join("") + `</div>`;
+
+  box.querySelectorAll("[data-on]").forEach((c) => c.onchange = () => { S.rows[+c.dataset.on].on = c.checked; pushRows(); });
+  box.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => openDialog(S.rows[+b.dataset.edit]));
+  box.querySelectorAll(".st .name").forEach((el) => el.ondblclick = () => openDialog(S.rows[+el.closest(".st").dataset.i]));
+  box.querySelectorAll("[data-logo]").forEach((t) => {
+    const r = S.rows[+t.dataset.logo];
+    t.onclick = () => { S.logoFor = r; $("rowfile").value = ""; $("rowfile").click(); };
+    dropTarget(t, (file) => uploadLogo(r, file));
+  });
+  dragRows(box);
+}
+async function pushRows() {
+  saved("Saving…");
+  try { take(await api("rows", { rows: S.rows.map((r) => ({ id: r.id, on: r.on })) })); saved(); }
+  catch (e) { saved(""); alert(e.message); }
+  renderList();
+}
+function dragRows(box) {
+  let from = null;
+  box.querySelectorAll(".st").forEach((el) => {
+    el.ondragstart = (ev) => {
+      if (ev.target.closest(".thumb")) { ev.preventDefault(); return; }
+      from = +el.dataset.i; el.classList.add("drag"); ev.dataTransfer.effectAllowed = "move";
+      ev.dataTransfer.setData("text/plain", String(from));
+    };
+    el.ondragend = () => { from = null; box.querySelectorAll(".st").forEach((x) => x.classList.remove("drag", "over-top", "over-bot")); };
+    el.ondragover = (ev) => {
+      if (from === null) return;
+      ev.preventDefault();
+      const top = ev.offsetY < el.offsetHeight / 2;
+      el.classList.toggle("over-top", top); el.classList.toggle("over-bot", !top);
+    };
+    el.ondragleave = () => el.classList.remove("over-top", "over-bot");
+    el.ondrop = (ev) => {
+      if (from === null) return;
+      ev.preventDefault();
+      let to = +el.dataset.i + (el.classList.contains("over-bot") ? 1 : 0);
+      const [r] = S.rows.splice(from, 1);
+      if (to > from) to--;
+      S.rows.splice(to, 0, r);
+      pushRows();
+    };
+  });
+}
+function dropTarget(el, onFile) {
+  el.addEventListener("dragover", (ev) => { if ([...ev.dataTransfer.types].includes("Files")) { ev.preventDefault(); el.classList.add("dropping"); } });
+  el.addEventListener("dragleave", () => el.classList.remove("dropping"));
+  el.addEventListener("drop", (ev) => {
+    el.classList.remove("dropping");
+    const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+    if (f) { ev.preventDefault(); ev.stopPropagation(); onFile(f); }
+  });
+}
+async function uploadLogo(r, file, hintEl) {
+  if (hintEl) { hintEl.className = "hint"; hintEl.textContent = "Making the logo…"; }
+  try {
+    take(await api(`logo/upload?id=${r.id}`, await file.arrayBuffer(), true));
+    saved(); renderList(); refreshDialogLogo();
+    if (hintEl) hintEl.textContent = "";
+  } catch (e) {
+    if (hintEl) { hintEl.className = "hint bad"; hintEl.textContent = e.message; } else alert(e.message);
+  }
+}
+$("rowfile").onchange = () => { const f = $("rowfile").files[0]; if (f && S.logoFor) uploadLogo(S.logoFor, f); };
+
+/* ---------- station dialog ---------- */
+let D = null;            // row being edited, or {} for a new one
+function openDialog(r) {
+  D = r || {};
+  const isNew = !r;
+  $("dtitle").textContent = isNew ? "Add a station" : "Edit station";
+  $("dname").value = D.name || "";
+  $("durl").value = D.url || "";
+  $("dlogourl").value = "";
+  $("dlogo-part").style.display = isNew ? "none" : "";
+  $("dremove").style.display = isNew ? "none" : "";
+  $("dsave").textContent = isNew ? "Add" : "Save";
+  ["dname-hint", "durl-hint", "dlogo-hint"].forEach((h) => { $(h).textContent = ""; $(h).className = "hint"; });
+  if (isNew) $("durl-hint").textContent = "Searching and testing stations comes in a later version; for now paste the address.";
+  checkName(); refreshDialogLogo();
+  $("dlg").showModal();
+  (isNew ? $("durl") : $("dname")).focus();
+}
+function checkName() {
+  const v = $("dname").value, n = bytes(v), h = $("dname-hint"), L = S.limits;
+  if (n > L.name) { h.className = "hint bad"; h.textContent = `Too long for the radio: it will be cut to ${L.name} characters.`; }
+  else if (v.length > L.name_warn) { h.className = "hint warn"; h.textContent = `${v.length} characters: names over ${L.name_warn} look crowded on the radio's screen.`; }
+  else { h.className = "hint"; h.textContent = v ? `${v.length} characters` : (D && D.icy_name ? `The radio will show “${D.icy_name}”.` : "The radio will show the name the station sends."); }
+}
+$("dname").oninput = checkName;
+function refreshDialogLogo() {
+  if (!D || !D.id) return;
+  const r = S.rows.find((x) => x.id === D.id); if (!r) return;
+  D = r;
+  const box = $("dlogo");
+  box.classList.toggle("has", r.logo);
+  box.innerHTML = r.logo ? `<img src="/logo/${r.id}?v=${r.logo_v}" alt="logo as the radio shows it">` : "No logo: the radio shows the initials.<br><br>Drop a picture here";
+  $("dlogoclear").style.display = r.logo ? "" : "none";
+}
+dropTarget($("dlogo"), (f) => uploadLogo(D, f, $("dlogo-hint")));
+$("dpick").onclick = () => { $("dfile").value = ""; $("dfile").click(); };
+$("dfile").onchange = () => { const f = $("dfile").files[0]; if (f) uploadLogo(D, f, $("dlogo-hint")); };
+$("dlogogo").onclick = async () => {
+  const h = $("dlogo-hint"); h.className = "hint"; h.textContent = "Downloading…";
+  try { take(await api("logo/url", { id: D.id, url: $("dlogourl").value })); saved(); renderList(); refreshDialogLogo(); h.textContent = ""; $("dlogourl").value = ""; }
+  catch (e) { h.className = "hint bad"; h.textContent = e.message; }
+};
+$("dlogoclear").onclick = async () => {
+  try { take(await api("logo/clear", { id: D.id })); saved(); renderList(); refreshDialogLogo(); } catch (e) { alert(e.message); }
+};
+$("dcancel").onclick = () => $("dlg").close();
+$("dremove").onclick = async () => {
+  if (!confirm(`Remove “${D.name || host(D.url)}” from the list?`)) return;
+  try { take(await api("rows/remove", { id: D.id })); saved(); renderList(); $("dlg").close(); } catch (e) { alert(e.message); }
+};
+$("dform").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const name = $("dname").value, url = $("durl").value.trim();
+  try {
+    if (D.id) take(await api("rows/update", { id: D.id, name, url }));
+    else take(await api("rows/add", { name, url }));
+    saved(); renderList(); $("dlg").close();
+  } catch (e) { $("durl-hint").className = "hint bad"; $("durl-hint").textContent = e.message; }
+};
+$("add").onclick = () => openDialog(null);
+
+/* ---------- 3. write ---------- */
+const EQ_NAMES = { flat: "Flat", bass: "Bass boost", treble: "Treble", acoustic: "Acoustic", live: "Live", voice: "Voice", classical: "Classical", loudness: "Loudness" };
+function renderWrite() {
+  const box = $("writebox");
+  if (!S.stick) { box.innerHTML = `<div class="card">No stick chosen. <button class="link" onclick="go('stick')">Choose the USB stick</button> first.</div>`; return; }
+  const on = S.rows.filter((r) => r.on);
+  const logos = on.filter((r) => r.logo).length;
+  const fail = on.filter((r) => r.status === "FAIL"), untested = on.filter((r) => !r.status);
+  const st = S.settings || {};
+  const set = [st.timezone && `time zone ${st.timezone}`, st.eq && `EQ ${EQ_NAMES[st.eq] || st.eq}`, st.brightness && `brightness ${st.brightness}%`].filter(Boolean).join(", ");
+  const j = S.job || { state: "idle" };
+  const busy = j.state === "running";
+  let warn = "";
+  if (!on.length) warn += `<div class="msg bad">No stations are switched on for the radio.</div>`;
+  if (on.length > (S.limits.stations || 255)) warn += `<div class="msg bad">The radio holds ${S.limits.stations} stations; only the first ${S.limits.stations} are written.</div>`;
+  if (fail.length) warn += `<div class="msg warn">${fail.length} station${fail.length > 1 ? "s" : ""} did not work when tested: ${fail.map((r) => esc(r.name || host(r.url))).join(", ")}.</div>`;
+  box.innerHTML = `<div class="card"><dl class="summary">
+      <dt>Stick</dt><dd>${esc(S.stick.name)} <span class="muted small">(${esc(S.stick.mount)})</span></dd>
+      <dt>Stations</dt><dd>${on.length}${untested.length ? ` <span class="muted small">(${untested.length} not tested)</span>` : ""}</dd>
+      <dt>Logos</dt><dd>${logos}${on.length - logos ? ` <span class="muted small">(${on.length - logos} show initials)</span>` : ""}</dd>
+      <dt>Settings</dt><dd>${set || `<span class="muted">none (the radio keeps its own)</span>`}</dd>
+      <dt>WiFi</dt><dd><span class="muted">left as it is on the stick${S.stick.radio && S.stick.radio.wifi_ssid ? ` (“${esc(S.stick.radio.wifi_ssid)}”)` : ""}</span></dd>
+    </dl>${warn}
+    <div class="row" style="margin-top:16px">
+      <button class="btn" id="wcheck" ${busy || !on.length ? "disabled" : ""}>Check what will change</button>
+      <button class="btn primary" id="wgo" ${busy || !on.length ? "disabled" : ""}>Write to the stick</button>
+      ${busy ? `<span class="spinner"></span><span class="muted">${j.kind === "write" ? "Writing…" : "Checking…"}</span>` : ""}
+    </div>${jobBlock(j)}</div>`;
+  $("wcheck").onclick = () => startJob(true);
+  $("wgo").onclick = () => startJob(false);
+  const ej = $("weject"); if (ej) ej.onclick = eject;
+}
+function jobBlock(j) {
+  if (j.state === "idle") return "";
+  if (j.state === "error") return `<div class="msg bad">${esc(j.error)}</div>`;
+  if (j.state === "running") return j.log.length ? `<div class="log">${esc(j.log.join("\n"))}</div>` : "";
+  const r = j.result, ch = r.changed;
+  const notes = r.notes.filter((n) => !/plain text/.test(n)).map((n) => `<li>${esc(n)}</li>`).join("");
+  if (j.kind === "check") {
+    return `<div class="msg ${ch.length ? "ok" : "ok"}">${ch.length ? `Writing will change ${ch.length} file${ch.length > 1 ? "s" : ""}:` : "The stick already matches: nothing to write."}</div>`
+      + (ch.length ? `<div class="log">${esc(ch.join("\n"))}</div>` : "") + (notes ? `<ul class="small muted">${notes}</ul>` : "");
+  }
+  return `<div class="msg ok">Done: ${r.stations} stations${r.logos !== null ? ` and ${r.logos} logos` : ""} are on the stick${ch.length ? ` (${ch.length} file${ch.length > 1 ? "s" : ""} changed)` : " (nothing needed changing)"}.</div>
+    ${notes ? `<ul class="small muted">${notes}</ul>` : ""}
+    <p><b>Next:</b></p><ol class="steps-after"><li>Eject the stick and unplug it.</li>
+    <li>Plug it into the back of the radio. It reads the stick and restarts once.</li>
+    <li>To see what the radio stored, plug the stick back into this computer: the first page shows its report.</li></ol>
+    <div class="row" style="margin-top:12px"><button class="btn primary" id="weject">Eject the stick</button><span id="ejmsg" class="muted"></span></div>`;
+}
+async function startJob(dry) {
+  try { S.job = await api("write", { mount: S.stick.mount, dry_run: dry }); renderWrite(); pollJob(); }
+  catch (e) { alert(e.message); }
+}
+async function pollJob() {
+  try { S.job = await api("job"); } catch (e) { return; }
+  if (S.page === "write") renderWrite();
+  if (S.job.state === "running") setTimeout(pollJob, 400);
+  else { S.sticksKey = ""; pollSticks(); }
+}
+async function eject() {
+  try { const j = await api("eject", { mount: S.stick.mount }); $("ejmsg").textContent = j.message; }
+  catch (e) { $("ejmsg").textContent = e.message; }
+}
+
+/* ---------- start ---------- */
+(async function start() {
+  try { take(await api("state")); } catch (e) { document.body.innerHTML = `<main><div class="msg bad">${esc(e.message)}</div></main>`; return; }
+  renderList();
+  try { S.job = await api("job"); if (S.job.state === "running") pollJob(); } catch (e) { /* ignore */ }
+  await pollSticks();
+  renderSticks();
+  const want = location.hash.slice(1);
+  go(["stick", "stations", "write"].includes(want) ? want : (S.rows.length && S.stick ? "stations" : "stick"));
+  setInterval(pollSticks, 3000);
+})();
+</script>
+</body>
+</html>

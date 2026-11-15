@@ -15,6 +15,7 @@ Workflow:
     p4radio.py build   --out card/              # stations.txt + N.jpg logos in a folder
     p4radio.py stick   /media/me/STICK          # write radio/ on the radio's USB stick
     p4radio.py report  /media/me/STICK          # what the radio said after importing it
+    p4radio.py gui                              # the same in a browser page (p4gui.py)
 
 Standard library only.  Pillow is needed only for logos (`build --logos`, `stick`)
 (pip install pillow, inside your venv).
@@ -599,6 +600,19 @@ def write_log(rows, path):
 def cmd_import(a):
     rows = load_lib(a.library)
     cfg = load_cfg(a.config)
+    if os.path.isdir(a.file):                   # a stick (or its radio/ folder)
+        root = os.path.dirname(a.file.rstrip("/")) if os.path.basename(a.file.rstrip("/")) == "radio" \
+            else a.file
+        logo_dir = os.path.join(os.path.dirname(os.path.abspath(a.library)), "logos")
+        rows, info, added = import_stick(root, rows, logo_dir)
+        save_lib(a.library, rows)
+        if info["settings"]:
+            cfg["settings"] = info["settings"]
+            save_cfg(a.config, cfg)
+        print(f"imported {added} stations and {len(info['logos'])} logos from {root} "
+              f"({len(rows)} total); settings: {info['settings'] or 'none'}")
+        print("they are untested: run `test`, or `stick --include-untested` to write them back as they are")
+        return
     added, layout = 0, None
     with open(a.file, encoding="utf-8", errors="replace") as f:
         for ln in f:
@@ -839,6 +853,21 @@ def cmd_listen(a):
     print("saved")
 
 
+def logo_ready(data, size):
+    """True if data is already a logo the radio takes as it is: a size x size
+    baseline JPEG, 3-component 4:2:0, under 256 KB."""
+    if len(data) >= FW_LOGO_MAX or data[:2] != b"\xff\xd8":
+        return False
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        return (im.format == "JPEG" and im.size == (size, size) and im.mode == "RGB"
+                and not im.info.get("progressive") and not im.info.get("progression")
+                and [layer[1:3] for layer in im.layer] == [(2, 2), (1, 1), (1, 1)])
+    except Exception:
+        return False
+
+
 def render_logo(src, size, bg):
     """Logo from a file path or URL -> baseline 4:2:0 JPEG bytes, size x size."""
     try:
@@ -852,6 +881,8 @@ def render_logo(src, size, bg):
     else:
         with open(os.path.expanduser(src), "rb") as f:
             data = f.read()
+    if logo_ready(data, size):
+        return data                              # already what the radio wants: keep the bytes
     im = Image.open(io.BytesIO(data))
     if getattr(im, "n_frames", 1) > 1:          # .ico: pick the largest
         best = max(range(im.n_frames), key=lambda k: (im.seek(k), im.size[0])[1])
@@ -883,7 +914,7 @@ def pick_rows(rows, include_untested=False, include_failed=False):
     return [r for r in rows if r["keep"].lower().startswith("y") and r["status"] in allow]
 
 
-def write_logos(out_rows, size, bg, jobs=6, log=print):
+def write_logos(out_rows, size, bg, jobs=6, log=print, render=None):
     """Renders the logos -> {station number: jpeg bytes}.  Stations without a
     usable logo are left out (the radio shows the initials tile)."""
     bgc = tuple(int(bg.lstrip("#")[k:k + 2], 16) for k in (0, 2, 4))
@@ -893,7 +924,7 @@ def write_logos(out_rows, size, bg, jobs=6, log=print):
             log(f"  {n:3d}. {r['name'][:30]:30s} no logo (radio shows initials)")
     out = {}
     with cf.ThreadPoolExecutor(jobs) as ex:
-        futs = {ex.submit(render_logo, r["logo"], size, bgc): (n, r) for n, r in want}
+        futs = {ex.submit(render or render_logo, r["logo"], size, bgc): (n, r) for n, r in want}
         for fu in cf.as_completed(futs):
             n, r = futs[fu]
             try:
@@ -1242,6 +1273,94 @@ def write_stick(root, out_rows, settings=None, wifi=None, wifi_remove=False, log
     return {"stations": len(kept), "logos": n_logos, "changed": changed, "notes": notes}
 
 
+def _read_text(path, limit=256 * 1024):
+    try:
+        with open(path, "rb") as f:
+            t = f.read(limit).decode("utf-8", "replace")
+    except OSError:
+        return None
+    return t[1:] if t.startswith("\ufeff") else t
+
+
+def read_stick(root):
+    """What is on a stick, read with the radio's rules.
+    -> {'stations': [(name, url)], 'logos': {n: path}, 'settings': {...},
+        'wifi_ssid': str or None, 'report': text or None, 'project': bool}"""
+    rdir = os.path.join(root, "radio")
+    out = {"stations": [], "logos": {}, "settings": {}, "wifi_ssid": None, "report": None,
+           "project": os.path.exists(os.path.join(root, "p4radio", "library.csv"))}
+    t = _read_text(os.path.join(rdir, "stations.txt"))
+    for ln in (t or "").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        name, bar, url = ln.partition("|")
+        if not bar:
+            name, url = "", ln
+        name, url = name.strip(), url.strip()
+        if url.startswith(("http://", "https://")) and fw_bytes(url) <= FW_URL_MAX \
+                and fw_bytes(name) <= FW_NAME_MAX and len(out["stations"]) < FW_STATIONS_MAX:
+            out["stations"].append((name, url))
+    if os.path.isdir(rdir):
+        for f in sorted(os.listdir(rdir), key=lambda f: (not f.lower().endswith(".jpg"), f)):
+            n = fw_logo_number(f)
+            if n and not f.startswith(".") and n not in out["logos"]:
+                out["logos"][n] = os.path.join(rdir, f)
+    t = _read_text(os.path.join(rdir, "config.txt"))
+    for ln in (t or "").splitlines():
+        key, eq, value = ln.split("#", 1)[0].partition("=")
+        key, value = key.strip().lower(), value.strip()
+        if not eq:
+            continue
+        if key == "timezone" and tz_valid(value):
+            out["settings"]["timezone"] = value
+        elif key == "eq" and value.lower() in EQ_PRESETS:
+            out["settings"]["eq"] = value.lower()
+        elif key == "brightness" and value.isdigit() and 20 <= int(value) <= 100:
+            out["settings"]["brightness"] = int(value)
+    t = _read_text(os.path.join(rdir, "wifi.txt"))
+    for ln in (t or "").splitlines():
+        if ln.strip() and not ln.strip().startswith("#"):
+            out["wifi_ssid"] = ln.rstrip("\r")
+            break
+    out["report"] = _read_text(os.path.join(rdir, "report.txt"))
+    return out
+
+
+def import_stick(root, rows, logo_dir, replace=False):
+    """Adds the stick's stations (in its order) to rows, copying its logos into
+    logo_dir.  replace=True starts from an empty list.  -> (rows, info, added)."""
+    info = read_stick(root)
+    if replace:
+        rows = []
+    os.makedirs(logo_dir, exist_ok=True)
+    added = 0
+    for n, (name, url) in enumerate(info["stations"], 1):
+        logo = ""
+        if n in info["logos"]:
+            with open(info["logos"][n], "rb") as f:
+                logo = store_logo(f.read(), logo_dir)
+        r = find_url(rows, url)
+        if r is None:
+            rows.append(new_row(name, url, logo=logo))
+            added += 1
+        elif logo and not r["logo"]:
+            r["logo"] = logo
+    return rows, info, added
+
+
+def store_logo(data, logo_dir):
+    """Keeps a picture in logo_dir under a name made from its contents -> path."""
+    import hashlib
+    kind = "jpg" if data[:2] == b"\xff\xd8" else "png" if data[:4] == b"\x89PNG" else "img"
+    path = os.path.join(logo_dir, f"{hashlib.sha1(data).hexdigest()[:16]}.{kind}")
+    if not os.path.exists(path):
+        os.makedirs(logo_dir, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+    return os.path.abspath(path)
+
+
 def eject(root):
     """Unmounts and powers off the stick.  -> message for the user."""
     m = _mount_of(root)
@@ -1335,13 +1454,16 @@ def cmd_report(a):
 # --------------------------------------------------------------------------
 
 def main():
+    if sys.argv[1:2] == ["gui"]:                # the configurator page (p4gui.py)
+        import p4gui
+        return p4gui.main(sys.argv[2:])
     p = argparse.ArgumentParser(prog="p4radio", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-L", "--library", default=LIB_DEFAULT, help="master library CSV (default library.csv)")
     p.add_argument("-C", "--config", default=CFG_DEFAULT)
     sp = p.add_subparsers(dest="cmd", required=True)
 
-    s = sp.add_parser("import", help="import an existing stations.txt (any 'name<sep>url' layout)")
+    s = sp.add_parser("import", help="import a stations.txt (any 'name<sep>url' layout), or a whole stick")
     s.add_argument("file")
     s.add_argument("--keep-format", action="store_true", help="don't overwrite the saved line layout")
     s.set_defaults(fn=cmd_import)

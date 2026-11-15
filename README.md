@@ -27,6 +27,32 @@ sudo apt install mpv          # only needed for listen
 ./p4radio.py report /media/$USER/STICK         # after the radio has imported the stick
 ```
 
+## The configurator page
+
+```bash
+python3 p4gui.py              # or ./p4radio.py gui
+```
+
+The page opens in your web browser. It has three steps:
+
+1. **USB stick**: lists removable drives and refuses anything that is not
+   FAT32. It shows what is on the stick and the radio's last report, and
+   **Load the stations from this stick** brings in its stations, logos and
+   settings.
+2. **Stations**: drag to reorder (the order is the station number on the
+   radio), switch stations on and off, edit names and addresses, and click or
+   drop a picture on a logo (or give a picture's web address).
+3. **Write**: **Check what will change** first, then **Write to the stick**,
+   then **Eject**.
+
+The station list, settings and logos are kept in `~/P4Radio` (`--project DIR`
+to change), the same `library.csv` / `p4radio.json` the commands below use.
+The page talks only to the program on 127.0.0.1, with a per-run key. Close the
+terminal window (or press Ctrl+C) to stop it.
+
+Not there yet: search, preview and testing (next step), the WiFi and settings
+page, and music. Windows and macOS drive detection is written but untested.
+
 ## Writing the radio's USB stick
 
 `stick` writes the `radio/` folder the firmware imports: `stations.txt`, logos
@@ -61,6 +87,10 @@ which `report` prints.
   Otherwise it is left as it is. It holds the password in plain text. WiFi
   details saved from the radio's phone setup page win over `wifi.txt`.
 - A copy of `library.csv` and `p4radio.json` goes into `p4radio/` on the stick.
+- `import /media/$USER/STICK` reads a whole stick back: its stations, logos
+  (copied to `logos/` next to the library) and settings. Logos that are already
+  304x304 baseline JPEGs are written back byte for byte, so the radio does not
+  recopy them.
 
 
 Selections (`test`, `listen`, `set`, `rm`) accept `all`, `3`, `1,4,7-9`, or a name fragment.
@@ -111,4 +141,5 @@ and a 404.
 `tests/test_stick.py` tests the stick writer. It builds the radio firmware's own
 parser (`../p4-radio/main/station_parse.c`, or `$P4_RADIO_FW`) with gcc and
 runs it over every file it writes. Without gcc, the firmware or Pillow, those
-tests are skipped.
+tests are skipped. `tests/test_gui.py` drives the configurator page's API with a
+folder standing in for the stick.

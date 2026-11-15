@@ -96,7 +96,7 @@ and show what the radio stored and anything it rejected, in plain words.
    `build` uses the same logo naming. Tests, including the firmware parser.
    The module split waits for step 2, when the GUI is the second user and the
    interfaces it needs are known.
-2. Split into `core` / `cli` / `gui`; web GUI with Stick, My stations, Write.
+2. Web GUI with Stick, My stations, Write (`p4gui.py`, using `p4radio.py` as the core).
 3. Search, preview proxy and Test in the GUI.
 4. WiFi and settings screen; report read-back.
 5. Music copy.
@@ -105,9 +105,15 @@ and show what the radio stored and anything it rejected, in plain words.
 ## Status
 
 - [x] 1 stick writer: `stick` and `report` commands, `tests/test_stick.py`
-      (19 tests, including the firmware's parser built on the PC); still to
-      do: a real stick imported on the radio
-- [ ] 2 GUI skeleton
+      (19 tests, including the firmware's parser built on the PC); the same
+      writer was used by the step 2 test on the radio
+- [x] 2 GUI: `p4gui.py` + `gui/index.html` (Stick, Stations, Write), loading a
+      stick's stations, logos and settings; `tests/test_gui.py`. The core stays
+      in `p4radio.py` (no separate core module: the GUI imports it).
+      Checked read-only against the real stick (26 stations / 26 logos: only
+      stations.txt and config.txt text would change, logos pass through).
+      Tested on the radio 2026-11-15: a stick written from the page with one
+      new station and a new logo was imported and works
 - [ ] 3 search / preview / test
 - [ ] 4 WiFi, settings, report
 - [ ] 5 music
